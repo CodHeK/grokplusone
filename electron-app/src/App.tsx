@@ -11,6 +11,7 @@ type SessionSummary = {
   end_time?: string;
   duration_seconds?: number;
   chunks?: number;
+  title?: string;
 };
 
 // Convert Float32 audio to 16-bit PCM
@@ -62,7 +63,6 @@ function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
-    // On macOS the main process already asked for mic access, but we still handle renderer errors.
     return () => stopCapture();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -141,7 +141,7 @@ function App() {
     };
   };
 
-  const stopCapture = () => {
+  const stopCapture = async () => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -156,7 +156,11 @@ function App() {
     }
     setIsConnected(false);
     setStatus('Stopped');
-    fetchSessions();
+    const latest = await fetchSessions();
+    if (latest.length > 0 && !latest[0].title) {
+      await generateTitle(latest[0].session_id);
+      await fetchSessions();
+    }
   };
 
   const fetchIntegrationStatus = async () => {
@@ -177,7 +181,6 @@ function App() {
       const data = await res.json();
       if (data.auth_url) {
         window.open(data.auth_url, '_blank');
-        // Poll status for a short period
         setTimeout(fetchIntegrationStatus, 3000);
         setTimeout(fetchIntegrationStatus, 8000);
       }
@@ -186,7 +189,7 @@ function App() {
     }
   };
 
-  const fetchSessions = async () => {
+  const fetchSessions = async (): Promise<SessionSummary[]> => {
     try {
       const res = await fetch(`${API_URL}/sessions`);
       const data = await res.json();
@@ -195,37 +198,34 @@ function App() {
         duration_seconds: s.duration_seconds !== undefined ? Number(s.duration_seconds) : undefined,
       }));
       setSessions(normalized);
+      return normalized;
     } catch (err) {
       console.warn('Failed to fetch sessions', err);
+      return [];
+    }
+  };
+
+  const generateTitle = async (sessionId: string) => {
+    try {
+      const res = await fetch(`${API_URL}/sessions/${sessionId}/title`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      console.warn('Failed to generate title', err);
+      return null;
     }
   };
 
   const dummyArtifacts = [
-    {
-      type: 'post',
-      title: 'AI agent autonomy is shifting product timelines',
-      author: '@ai_researcher',
-      link: 'https://x.com/ai_researcher/status/123',
-    },
-    {
-      type: 'post',
-      title: 'React 19 + Suspense for data fetching lessons',
-      author: '@frontenddev',
-      link: 'https://x.com/frontenddev/status/456',
-    },
-    {
-      type: 'user',
-      title: 'Jane Doe — product + ML',
-      author: '@janedoe',
-      link: 'https://x.com/janedoe',
-    },
+    { type: 'post', title: 'AI agent autonomy is shifting product timelines', author: '@ai_researcher', link: 'https://x.com/ai_researcher/status/123' },
+    { type: 'post', title: 'React 19 + Suspense for data fetching lessons', author: '@frontenddev', link: 'https://x.com/frontenddev/status/456' },
+    { type: 'user', title: 'Jane Doe — product + ML', author: '@janedoe', link: 'https://x.com/janedoe' },
   ];
 
   const runSearch = async () => {
     setSearching(true);
     setSearchAnswer(null);
     try {
-      // Placeholder: in real flow call Grok API with transcript context + query
       await new Promise((res) => setTimeout(res, 800));
       setSearchAnswer(`(Stub) Answer about "${searchQuery}" based on your recording context would appear here.`);
     } catch (err: any) {
@@ -246,131 +246,214 @@ function App() {
   };
 
   return (
-    <div className="container">
-      <h1>🎧 Listening Buddy (Desktop)</h1>
-      <div className="status-box">
-        <p className="status-text">{status}</p>
-      </div>
-
-      <div className="controls">
-        {!isConnected ? (
-          <button className="btn-primary" onClick={startMicCapture}>
-            Start Microphone
-          </button>
-        ) : (
-          <button className="btn-danger" onClick={stopCapture}>
-            Stop Listening
-          </button>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <p className="card-title">Integrations</p>
-            <p className="card-subtitle">Connect X (Twitter) API keys for insights.</p>
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="mx-auto max-w-6xl px-6 py-6 flex flex-col gap-6">
+        <header className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center font-bold text-slate-900 shadow-glow">
+              LB
+            </div>
+            <div>
+              <p className="text-lg font-semibold">Listening Buddy</p>
+              <p className="text-sm text-slate-400">Voice-first infinite context</p>
+            </div>
           </div>
-          <span className={`pill ${integrationStatus.connected ? 'pill-on' : 'pill-off'}`}>
-            {integrationStatus.connected ? 'Connected' : 'Not connected'}
-          </span>
-        </div>
-
-        {integrationStatus.user && (
-          <div className="card-subtitle">
-            Connected as: {integrationStatus.user?.data?.username || integrationStatus.user?.data?.name || 'Unknown'}
-          </div>
-        )}
-
-        <div className="actions">
-          <button className="link-button" onClick={startOAuth}>Connect with X OAuth</button>
-          {integrationStatus.updated_at && <span className="meta">Updated: {new Date(integrationStatus.updated_at).toLocaleString()}</span>}
-        </div>
-        <div className="debug-section">
-          <p>Redirect URI: http://localhost:8000/integrations/x/oauth/callback</p>
-        </div>
-        {saveMessage && <p className="status-text">{saveMessage}</p>}
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <p className="card-title">Recordings</p>
-            <p className="card-subtitle">Completed sessions</p>
-          </div>
-          <span className="pill pill-off">{sessions.length} total</span>
-        </div>
-        <div className="recordings-list">
-          {sessions.length === 0 && <p className="status-text">No recordings yet.</p>}
-          {sessions.map((session, idx) => (
+          <div className="flex items-center gap-3">
+            <span className={integrationStatus.connected ? 'pill-on' : 'pill-off'}>
+              {integrationStatus.connected ? 'X Connected' : 'X Not Connected'}
+            </span>
             <button
-              key={session.session_id}
-              className="recording-row"
-              onClick={() => setSelectedSession(session)}
+              onClick={startOAuth}
+              className="rounded-full border border-blue-400/50 px-4 py-2 text-sm font-semibold text-blue-200 hover:bg-blue-500/10 transition"
             >
-              <div className="recording-main">
-                <span className="recording-title">Recording {idx + 1} ({session.session_id})</span>
-                <span className="recording-meta">
-                  {session.start_time ? new Date(session.start_time).toLocaleString() : 'Unknown start'}
+              Connect X
+            </button>
+          </div>
+        </header>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 glass rounded-3xl p-6 relative overflow-hidden">
+            <div className="absolute inset-0 pointer-events-none opacity-40 blur-3xl" style={{ background: 'radial-gradient(circle at 30% 30%, rgba(59,130,246,0.15), transparent 40%), radial-gradient(circle at 80% 20%, rgba(56,189,248,0.18), transparent 35%)' }} />
+            <div className="relative flex flex-col gap-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.2em] text-slate-400">Voice Agent</p>
+                  <p className="text-2xl font-semibold">Speak and listen with infinite memory</p>
+                </div>
+                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${isConnected ? 'bg-emerald-500/15 text-emerald-200' : 'bg-slate-800 text-slate-300'}`}>
+                  {isConnected ? 'Live' : 'Idle'}
                 </span>
               </div>
-              <div className="recording-meta">
-                Duration: {formatDuration(session.duration_seconds)} | Chunks: {session.chunks ?? 0}
+
+              <div className="flex flex-col items-center gap-4 py-6">
+                <div className="relative h-48 w-48 flex items-center justify-center rounded-full voice-orb glow border border-blue-400/20">
+                  <div className={`h-32 w-32 rounded-full bg-slate-900/70 border border-blue-400/40 flex items-center justify-center ${isConnected ? 'animate-pulse' : ''}`}>
+                    <span className="text-lg font-semibold">{isConnected ? 'Listening…' : 'Tap to speak'}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 text-slate-300">
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <p className="text-sm">{status}</p>
+                </div>
+                <div className="flex gap-3">
+                  {!isConnected ? (
+                    <button
+                      onClick={startMicCapture}
+                      className="rounded-full bg-gradient-to-r from-blue-500 to-cyan-400 px-6 py-3 text-slate-950 font-semibold shadow-glow transition hover:scale-105"
+                    >
+                      Start Recording
+                    </button>
+                  ) : (
+                    <button
+                      onClick={stopCapture}
+                      className="rounded-full bg-red-500/90 px-6 py-3 text-slate-50 font-semibold shadow-lg shadow-red-500/30 transition hover:scale-105"
+                    >
+                      Stop Recording
+                    </button>
+                  )}
+                </div>
               </div>
-            </button>
-          ))}
-        </div>
-      </div>
 
-      <div className="debug-section">
-        <p>Backend WS: {WS_URL}</p>
-      </div>
+              <div className="glass rounded-2xl p-4">
+                <div className="flex items-center justify-between text-sm text-slate-300">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                    <span>{isConnected ? 'Streaming to backend' : 'Not streaming'}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span>WS: {WS_URL}</span>
+                    {integrationStatus.updated_at && <span>Last X sync: {new Date(integrationStatus.updated_at).toLocaleString()}</span>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
 
-      {selectedSession && (
-        <div className="modal-backdrop" onClick={() => setSelectedSession(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <p className="card-title">Recording Details</p>
-                <p className="card-subtitle">
-                  Recording ID: {selectedSession.session_id.slice(0, 8)}… • {selectedSession.start_time ? new Date(selectedSession.start_time).toLocaleString() : 'Unknown start'}
+          <div className="flex flex-col gap-4">
+            <div className="glass rounded-2xl p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-slate-400">Integrations</p>
+                  <p className="text-lg font-semibold">X (Twitter)</p>
+                </div>
+                <span className={integrationStatus.connected ? 'pill-on' : 'pill-off'}>
+                  {integrationStatus.connected ? 'Connected' : 'Not Connected'}
+                </span>
+              </div>
+              {saveMessage && <p className="text-sm text-slate-300 mt-2">{saveMessage}</p>}
+              {integrationStatus.user && (
+                <p className="text-sm text-slate-400 mt-2">
+                  Connected as {integrationStatus.user?.data?.username || integrationStatus.user?.data?.name || 'Unknown'}
                 </p>
-              </div>
-              <button className="btn-danger" onClick={() => setSelectedSession(null)}>Close</button>
+              )}
+              <p className="text-xs text-slate-500 mt-2">Redirect URI: http://localhost:8000/integrations/x/oauth/callback</p>
             </div>
 
-            <div className="modal-section">
-              <p className="section-title">X Artifacts</p>
-              <div className="artifact-grid">
-                {dummyArtifacts.map((item, i) => (
-                  <div key={i} className="artifact-card">
-                    <p className="artifact-type">{item.type === 'post' ? 'Post' : 'User'}</p>
-                    <p className="artifact-title">{item.title}</p>
-                    <p className="artifact-meta">by {item.author}</p>
-                    <a className="artifact-link" href={item.link} target="_blank" rel="noreferrer">View</a>
-                  </div>
+            <div className="glass rounded-2xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="text-sm text-slate-400">Recordings</p>
+                  <p className="text-lg font-semibold">Recent sessions</p>
+                </div>
+                <span className="pill-off">{sessions.length} total</span>
+              </div>
+              <div className="flex flex-col gap-2 max-h-[320px] overflow-y-auto pr-1">
+                {sessions.length === 0 && <p className="text-sm text-slate-400">No recordings yet.</p>}
+                {sessions.map((session, idx) => (
+                  <button
+                    key={session.session_id}
+                    className="w-full rounded-xl border border-white/5 bg-white/5 px-3 py-2 text-left hover:border-blue-400/30 transition"
+                    onClick={() => setSelectedSession(session)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold">
+                        {session.title ? session.title : `Processing ...`}
+                      </span>
+                      <span className="text-xs text-slate-400">{formatDuration(session.duration_seconds)}</span>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      {session.start_time ? new Date(session.start_time).toLocaleString() : 'Unknown start'}
+                    </p>
+                  </button>
                 ))}
               </div>
             </div>
+          </div>
+        </div>
 
-            <div className="modal-section">
-              <p className="section-title">Ask Grok about this recording</p>
-              <div className="search-row">
-                <input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Ask a question about what you heard..."
-                />
-                <button className="btn-primary" onClick={runSearch} disabled={searching || !searchQuery.trim()}>
-                  {searching ? 'Thinking...' : 'Ask'}
+        {selectedSession && (
+          <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 px-4" onClick={() => setSelectedSession(null)}>
+            <div
+              className="w-full max-w-4xl rounded-3xl bg-slate-900 border border-white/10 p-6 shadow-2xl shadow-blue-500/10"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm text-slate-400">Recording</p>
+                  <p className="text-xl font-semibold">
+                    {selectedSession.title ? selectedSession.title : `Session ${selectedSession.session_id.slice(0, 6)}…`}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {selectedSession.start_time ? new Date(selectedSession.start_time).toLocaleString() : 'Unknown start'} • {formatDuration(selectedSession.duration_seconds)} • {selectedSession.chunks ?? 0} chunks
+                  </p>
+                </div>
+                <button
+                  className="rounded-full bg-red-500/90 px-4 py-2 text-sm font-semibold text-white"
+                  onClick={() => setSelectedSession(null)}
+                >
+                  Close
                 </button>
               </div>
-              <div className="search-answer">
-                {searchAnswer ? <p>{searchAnswer}</p> : <p className="status-text">Responses will appear here.</p>}
+
+              <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="rounded-2xl border border-white/5 bg-white/5 p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-sm uppercase tracking-[0.15em] text-slate-400">X artifacts</p>
+                    <span className="pill-on">Live link</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {dummyArtifacts.map((item, i) => (
+                      <div key={i} className="rounded-xl border border-white/10 bg-slate-900/70 p-3 flex flex-col gap-1">
+                        <p className="text-xs text-slate-400">{item.type === 'post' ? 'Post' : 'User'}</p>
+                        <p className="font-semibold">{item.title}</p>
+                        <p className="text-xs text-slate-500">by {item.author}</p>
+                        <a className="text-sm text-blue-300 hover:underline mt-1" href={item.link} target="_blank" rel="noreferrer">
+                          View on X
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/5 bg-white/5 p-4 flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm uppercase tracking-[0.15em] text-slate-400">Ask Grok</p>
+                    <span className="text-xs text-slate-500">Stubbed</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      className="w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Ask a question about this recording..."
+                    />
+                    <button
+                      className="rounded-xl bg-gradient-to-r from-blue-500 to-cyan-400 px-4 py-2 text-slate-950 font-semibold disabled:opacity-50"
+                      onClick={runSearch}
+                      disabled={searching || !searchQuery.trim()}
+                    >
+                      {searching ? 'Thinking…' : 'Ask'}
+                    </button>
+                  </div>
+                  <div className="min-h-[80px] rounded-xl border border-white/10 bg-slate-900/50 p-3 text-sm text-slate-200">
+                    {searchAnswer ? searchAnswer : 'Responses will appear here.'}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

@@ -5,17 +5,18 @@ import base64
 import uuid
 import hashlib
 import secrets
+import httpx
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
-import httpx
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from llm_utils import generate_title_from_transcript
 
 load_dotenv()
 
@@ -30,12 +31,13 @@ app.add_middleware(
 )
 
 # Grok Voice Config
-GROK_API_KEY = os.getenv("XAI_API_KEY")
+GROK_API_KEY = os.getenv("XAI_API_KEY", "xai-U3SgU6NpZaSL7FBx79GgiFsKPMIldSCjPGEFrR2OHve5EbubS4HJpHHI96sqeMSWa5O2l7IPPY8kkZEy")
 BASE_URL = os.getenv("BASE_URL", "https://api.x.ai/v1")
 WS_URL = BASE_URL.replace("https://", "wss://").replace("http://", "ws://") + "/realtime/audio/transcriptions"
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", "storage"))
 # Target ~20–30 seconds per chunk for long-form; adjust via env if needed
-CHUNK_CHAR_TARGET = int(os.getenv("CHUNK_CHAR_TARGET", "1200"))
+CHUNK_CHAR_TARGET = int(os.getenv("CHUNK_CHAR_TARGET", "20"))
+CHUNK_FLUSH_SECONDS = int(os.getenv("CHUNK_FLUSH_SECONDS", "20"))
 INTEGRATIONS_DIR = STORAGE_ROOT / "integrations"
 INTEGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
 X_CLIENT_ID = os.getenv("X_CLIENT_ID", "V3JiQ2tGZU9OaWhkeFZCWjU4UjA6MTpjaQ")
@@ -93,6 +95,45 @@ def write_session_meta(session_id: str, data: Dict[str, Any]) -> None:
     path = session_meta_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2))
+
+
+def read_session_text(session_id: str, max_chars: int = 6000) -> str:
+    """
+    Load transcript text for a session up to max_chars.
+    Prefers the consolidated transcript.txt, falls back to chunk_*.txt if present.
+    """
+    session_dir = STORAGE_ROOT / session_id
+    if not session_dir.exists():
+        return ""
+
+    transcript_file = session_dir / "transcript.txt"
+    texts: list[str] = []
+    total = 0
+
+    if transcript_file.exists():
+        try:
+            content = transcript_file.read_text(encoding="utf-8")
+            texts.append(content[:max_chars])
+        except Exception:
+            pass
+    else:
+        chunks = sorted(session_dir.glob("chunk_*.txt"))
+        for chunk in chunks:
+            try:
+                content = chunk.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if not content:
+                continue
+            if total + len(content) > max_chars:
+                content = content[: max_chars - total]
+            texts.append(content)
+            total += len(content)
+            if total >= max_chars:
+                break
+
+    return "\n".join(texts)
+
 
 @app.get("/")
 async def health_check():
@@ -164,6 +205,7 @@ async def list_sessions():
                     "end_time": data.get("end_time"),
                     "duration_seconds": data.get("duration_seconds"),
                     "chunks": data.get("chunks", 0),
+                    "title": data.get("title"),
                 }
             )
         except Exception:
@@ -171,6 +213,38 @@ async def list_sessions():
     # Sort newest first by start_time
     sessions.sort(key=lambda s: s.get("start_time") or "", reverse=True)
     return {"sessions": sessions}
+
+
+@app.post("/sessions/{session_id}/title")
+async def generate_session_title(session_id: str):
+    meta_file = session_meta_path(session_id)
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Load session metadata
+    try:
+        meta = json.loads(meta_file.read_text())
+    except Exception:
+        meta = {}
+
+    # If already titled, return cached
+    if meta.get("title"):
+        return {"title": meta["title"], "cached": True}
+
+    transcript = read_session_text(session_id)
+    if not transcript:
+        raise HTTPException(status_code=400, detail="No transcript chunks found for this session")
+
+    try:
+        title, _raw = await generate_title_from_transcript(transcript)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Title generation failed: {e}")
+
+    meta["title"] = title
+    meta["title_generated_at"] = datetime.utcnow().isoformat()
+    write_session_meta(session_id, meta)
+
+    return {"title": title, "cached": False}
 
 
 @app.get("/integrations/x/oauth/start")
@@ -325,7 +399,6 @@ async def audio_websocket(client_ws: WebSocket):
             # Task A: Client Audio -> Grok
             async def upstream():
                 try:
-                    chunk_count = 0
                     while True:
                         # Receive raw bytes from extension (Int16 PCM)
                         data = await client_ws.receive_bytes()
@@ -339,37 +412,19 @@ async def audio_websocket(client_ws: WebSocket):
                             "data": {"audio": audio_b64},
                         }
                         await grok_ws.send(json.dumps(audio_message))
-                        
-                        chunk_count += 1
-                        if chunk_count % 50 == 0:
-                            print(f".", end="", flush=True)  # Alive indicator
+                
                 except WebSocketDisconnect:
                     print("Client disconnected")
                 except Exception as e:
                     print(f"Upstream error: {e}")
 
-            # Buffer for chunked transcript storage
-            chunk_buffer = []
-            buffer_chars = 0
+            transcript_path = session_dir / "transcript.txt"
+            transcript_path.write_text("", encoding="utf-8")
             chunk_counter = 0
-
-            def flush_chunk():
-                nonlocal chunk_buffer, buffer_chars, chunk_counter, session_meta
-                if not chunk_buffer:
-                    return
-                chunk_text = " ".join(chunk_buffer).strip()
-                chunk_id = uuid.uuid4().hex
-                chunk_path = session_dir / f"chunk_{chunk_id}.txt"
-                chunk_path.write_text(chunk_text, encoding="utf-8")
-                chunk_counter += 1
-                session_meta["chunks"] = chunk_counter
-                write_session_meta(session_id, session_meta)
-                print(f"💾 Saved chunk {chunk_id} ({len(chunk_text)} chars) to {chunk_path}")
-                chunk_buffer = []
-                buffer_chars = 0
 
             # Task B: Grok Transcripts -> Client (or Log for now)
             async def downstream():
+                nonlocal chunk_counter, session_meta
                 try:
                     async for message in grok_ws:
                         response = json.loads(message)
@@ -381,11 +436,16 @@ async def audio_websocket(client_ws: WebSocket):
                             if transcript:
                                 if is_final:
                                     print(f"✅ Final: {transcript}")
-                                    # Accumulate into chunk buffer
-                                    chunk_buffer.append(transcript)
-                                    buffer_chars += len(transcript)
-                                    if buffer_chars >= CHUNK_CHAR_TARGET:
-                                        flush_chunk()
+                                    # Append final text to single transcript file
+                                    with transcript_path.open("a", encoding="utf-8") as f:
+                                        f.write(transcript.strip() + "\n")
+                                    chunk_counter += 1
+                                    session_meta["chunks"] = chunk_counter
+                                    # update duration/end_time on each final so UI sees progress
+                                    now = datetime.utcnow()
+                                    session_meta["end_time"] = now.isoformat()
+                                    session_meta["duration_seconds"] = max((now - session_start).total_seconds(), 0)
+                                    write_session_meta(session_id, session_meta)
                                 # else:
                                 #     print(f"💭 Interim: {transcript}")
                                 
@@ -396,15 +456,13 @@ async def audio_websocket(client_ws: WebSocket):
 
             # Run both
             await asyncio.gather(upstream(), downstream())
-            # Flush remaining buffered transcript on shutdown
-            flush_chunk()
 
     except Exception as e:
         print(f"Error in session: {e}")
     finally:
         if session_start:
             end_time = datetime.utcnow()
-            duration = (end_time - session_start).total_seconds()
+            duration = max((end_time - session_start).total_seconds(), 0)
             session_meta["end_time"] = end_time.isoformat()
             session_meta["duration_seconds"] = duration
             session_meta["status"] = "completed"
