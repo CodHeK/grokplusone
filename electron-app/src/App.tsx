@@ -5,6 +5,14 @@ const WS_URL = 'ws://localhost:8000/ws/audio';
 const API_URL = 'http://localhost:8000';
 const TARGET_SAMPLE_RATE = 16000;
 
+type SessionSummary = {
+  session_id: string;
+  start_time?: string;
+  end_time?: string;
+  duration_seconds?: number;
+  chunks?: number;
+};
+
 // Convert Float32 audio to 16-bit PCM
 function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
   const int16Array = new Int16Array(float32Array.length);
@@ -44,6 +52,7 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [integrationStatus, setIntegrationStatus] = useState<{ connected: boolean; updated_at?: string; has_keys?: boolean; user?: any }>({ connected: false });
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -56,6 +65,7 @@ function App() {
 
   useEffect(() => {
     fetchIntegrationStatus();
+    fetchSessions();
   }, []);
 
   const startMicCapture = async () => {
@@ -142,6 +152,7 @@ function App() {
     }
     setIsConnected(false);
     setStatus('Stopped');
+    fetchSessions();
   };
 
   const fetchIntegrationStatus = async () => {
@@ -169,6 +180,30 @@ function App() {
     } catch (err) {
       setSaveMessage(`OAuth start failed: ${(err as any)?.message || 'unknown error'}`);
     }
+  };
+
+  const fetchSessions = async () => {
+    try {
+      const res = await fetch(`${API_URL}/sessions`);
+      const data = await res.json();
+      const normalized = (data.sessions || []).map((s: SessionSummary) => ({
+        ...s,
+        duration_seconds: s.duration_seconds !== undefined ? Number(s.duration_seconds) : undefined,
+      }));
+      setSessions(normalized);
+    } catch (err) {
+      console.warn('Failed to fetch sessions', err);
+    }
+  };
+
+  const formatDuration = (seconds?: number) => {
+    const val = typeof seconds === 'string' ? parseFloat(seconds) : seconds;
+    if (val === undefined || val === null || Number.isNaN(val)) return '—';
+    const mins = Math.floor(val / 60);
+    const secs = Math.floor(val % 60)
+      .toString()
+      .padStart(2, '0');
+    return `${mins}:${secs}`;
   };
 
   return (
@@ -215,6 +250,32 @@ function App() {
           <p>Redirect URI: http://localhost:8000/integrations/x/oauth/callback</p>
         </div>
         {saveMessage && <p className="status-text">{saveMessage}</p>}
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <p className="card-title">Recordings</p>
+            <p className="card-subtitle">Completed sessions</p>
+          </div>
+          <span className="pill pill-off">{sessions.length} total</span>
+        </div>
+        <div className="recordings-list">
+          {sessions.length === 0 && <p className="status-text">No recordings yet.</p>}
+          {sessions.map((session, idx) => (
+            <div key={session.session_id} className="recording-row">
+              <div className="recording-main">
+                <span className="recording-title">Recording {idx + 1} ({session.session_id})</span>
+                <span className="recording-meta">
+                  {session.start_time ? new Date(session.start_time).toLocaleString() : 'Unknown start'}
+                </span>
+              </div>
+              <div className="recording-meta">
+                Duration: {formatDuration(session.duration_seconds)} | Chunks: {session.chunks ?? 0}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="debug-section">

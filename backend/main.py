@@ -84,6 +84,16 @@ def build_code_challenge(verifier: str) -> str:
     digest = hashlib.sha256(verifier.encode("utf-8")).digest()
     return base64url_encode(digest)
 
+
+def session_meta_path(session_id: str) -> Path:
+    return STORAGE_ROOT / session_id / "session.json"
+
+
+def write_session_meta(session_id: str, data: Dict[str, Any]) -> None:
+    path = session_meta_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+
 @app.get("/")
 async def health_check():
     return {"status": "ok", "service": "Listening Buddy Intelligence Layer"}
@@ -129,6 +139,38 @@ async def set_x_integration(config: XIntegrationConfig):
     payload["updated_at"] = datetime.utcnow().isoformat()
     save_integration("x", payload)
     return {"status": "ok", "connected": payload["connected"], "updated_at": payload["updated_at"]}
+
+
+@app.get("/sessions")
+async def list_sessions():
+    sessions = []
+    if not STORAGE_ROOT.exists():
+        return {"sessions": []}
+
+    for item in STORAGE_ROOT.iterdir():
+        if not item.is_dir():
+            continue
+        if item.name == "integrations":
+            continue
+        meta_file = item / "session.json"
+        if not meta_file.exists():
+            continue
+        try:
+            data = json.loads(meta_file.read_text())
+            sessions.append(
+                {
+                    "session_id": data.get("session_id", item.name),
+                    "start_time": data.get("start_time"),
+                    "end_time": data.get("end_time"),
+                    "duration_seconds": data.get("duration_seconds"),
+                    "chunks": data.get("chunks", 0),
+                }
+            )
+        except Exception:
+            continue
+    # Sort newest first by start_time
+    sessions.sort(key=lambda s: s.get("start_time") or "", reverse=True)
+    return {"sessions": sessions}
 
 
 @app.get("/integrations/x/oauth/start")
@@ -245,6 +287,16 @@ async def audio_websocket(client_ws: WebSocket):
     session_dir = STORAGE_ROOT / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     print(f"Extension connected. Session: {session_id}")
+    session_start = datetime.utcnow()
+    session_meta = {
+        "session_id": session_id,
+        "start_time": session_start.isoformat(),
+        "end_time": None,
+        "duration_seconds": None,
+        "status": "active",
+        "chunks": 0,
+    }
+    write_session_meta(session_id, session_meta)
 
     if not GROK_API_KEY:
         print("Error: XAI_API_KEY not found")
@@ -299,15 +351,19 @@ async def audio_websocket(client_ws: WebSocket):
             # Buffer for chunked transcript storage
             chunk_buffer = []
             buffer_chars = 0
+            chunk_counter = 0
 
             def flush_chunk():
-                nonlocal chunk_buffer, buffer_chars
+                nonlocal chunk_buffer, buffer_chars, chunk_counter, session_meta
                 if not chunk_buffer:
                     return
                 chunk_text = " ".join(chunk_buffer).strip()
                 chunk_id = uuid.uuid4().hex
                 chunk_path = session_dir / f"chunk_{chunk_id}.txt"
                 chunk_path.write_text(chunk_text, encoding="utf-8")
+                chunk_counter += 1
+                session_meta["chunks"] = chunk_counter
+                write_session_meta(session_id, session_meta)
                 print(f"💾 Saved chunk {chunk_id} ({len(chunk_text)} chars) to {chunk_path}")
                 chunk_buffer = []
                 buffer_chars = 0
@@ -346,4 +402,11 @@ async def audio_websocket(client_ws: WebSocket):
     except Exception as e:
         print(f"Error in session: {e}")
     finally:
+        if session_start:
+            end_time = datetime.utcnow()
+            duration = (end_time - session_start).total_seconds()
+            session_meta["end_time"] = end_time.isoformat()
+            session_meta["duration_seconds"] = duration
+            session_meta["status"] = "completed"
+            write_session_meta(session_id, session_meta)
         print(f"Session closed: {session_id}")

@@ -87,6 +87,36 @@ button:hover {
   flex: none;
 }
 
+.recordings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.recording-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 0.75rem;
+  background: #0b1220;
+  border-radius: 0.4rem;
+  border: 1px solid #1f2937;
+}
+
+.recording-main {
+  display: flex;
+  flex-direction: column;
+}
+
+.recording-title {
+  font-weight: 700;
+}
+
+.recording-meta {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
 .card {
   background: var(--card-bg);
   border: 1px solid #334155;
