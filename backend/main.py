@@ -16,7 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-from llm_utils import generate_title_from_transcript, generate_insights_from_transcript
+from llm_utils import (
+    generate_title_from_transcript,
+    generate_insights_from_transcript,
+    summarize_user_interest_theme,
+)
 
 load_dotenv()
 
@@ -41,6 +45,7 @@ CHUNK_FLUSH_SECONDS = int(os.getenv("CHUNK_FLUSH_SECONDS", "20"))
 INSIGHTS_INTERVAL_SECONDS = int(os.getenv("INSIGHTS_INTERVAL_SECONDS", "5"))
 INTEGRATIONS_DIR = STORAGE_ROOT / "integrations"
 INTEGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
+USER_INTERESTS_FILE = STORAGE_ROOT / "user_interests.json"
 X_CLIENT_ID = os.getenv("X_CLIENT_ID", "V3JiQ2tGZU9OaWhkeFZCWjU4UjA6MTpjaQ")
 X_CLIENT_SECRET = os.getenv("X_CLIENT_SECRET", "bS-gBbRZfF58DwQeBPJpZO3FQRxjFUfuS_EGv8a21I1U2yHa_Q")
 X_REDIRECT_URI = os.getenv("X_REDIRECT_URI", "http://localhost:8000/integrations/x/oauth/callback")
@@ -77,6 +82,25 @@ def save_integration(name: str, data: Dict[str, Any]) -> None:
     path = integration_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2))
+
+
+def load_user_interests() -> Dict[str, Any]:
+    if not USER_INTERESTS_FILE.exists():
+        return {}
+    try:
+        return json.loads(USER_INTERESTS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def save_user_interests(data: Dict[str, Any]) -> None:
+    USER_INTERESTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    USER_INTERESTS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def get_user_interests_text() -> str:
+    data = load_user_interests()
+    return data.get("interests_text", "")
 
 
 def base64url_encode(data: bytes) -> str:
@@ -244,6 +268,44 @@ async def set_x_integration(config: XIntegrationConfig):
     return {"status": "ok", "connected": payload["connected"], "updated_at": payload["updated_at"]}
 
 
+@app.post("/user-interests/generate")
+async def generate_user_interests(force: bool = Query(default=False)):
+    existing = load_user_interests()
+    if existing and not force:
+        return {**existing, "cached": True}
+
+    x_data = load_integration("x")
+    access_token = x_data.get("access_token")
+    user_id = x_data.get("user", {}).get("data", {}).get("id")
+    if not access_token or not user_id:
+        raise HTTPException(status_code=400, detail="X integration not connected")
+
+    likes = await fetch_x_liked_tweets(user_id, access_token, max_results=20)
+    print(f"Got {len(likes)} liked posts")
+    summary = summarize_likes_text(likes, max_items=20)
+    interest_theme = summary
+    if likes:
+        try:
+            interest_theme = await summarize_user_interest_theme(likes)
+        except Exception as e:
+            print(f"Failed to summarize interests via Grok: {e}")
+    enriched_sample = []
+    for item in likes:
+        enriched = dict(item)
+        tweet_id = item.get("id")
+        if tweet_id:
+            enriched["url"] = f"https://x.com/i/web/status/{tweet_id}"
+        enriched_sample.append(enriched)
+    payload = {
+        "interests_text": interest_theme,
+        "raw_likes_summary": summary,
+        "likes_sample": enriched_sample,
+        "generated_at": datetime.utcnow().isoformat(),
+    }
+    save_user_interests(payload)
+    return {**payload, "cached": False}
+
+
 @app.get("/sessions")
 async def list_sessions():
     sessions = []
@@ -325,20 +387,13 @@ async def get_session_insights(session_id: str):
         return {"insights": cached}
 
     # Otherwise generate once on demand
-    x_data = load_integration("x")
-    user_interests_text = ""
-    access_token = x_data.get("access_token")
-    user_id = x_data.get("user", {}).get("data", {}).get("id")
-    if access_token and user_id:
-        likes = await fetch_x_liked_tweets(user_id, access_token, max_results=20)
-        user_interests_text = summarize_likes_text(likes)
+    user_interests_text = get_user_interests_text()
 
     try:
         insights = await generate_insights_from_transcript(transcript, user_interests=user_interests_text)
         payload = {
             "timestamp": datetime.utcnow().isoformat(),
-            "notes": insights.get("notes", []),
-            "artifacts": insights.get("artifacts", []),
+            "notes": insights.get("notes", [])
         }
         append_insights(session_id, payload)
         return {"insights": [payload]}
@@ -372,13 +427,7 @@ async def insights_websocket(ws: WebSocket, session_id: str):
                 continue
             last_len = len(transcript)
 
-            x_data = load_integration("x")
-            user_interests_text = ""
-            access_token = x_data.get("access_token")
-            user_id = x_data.get("user", {}).get("data", {}).get("id")
-            if access_token and user_id:
-                likes = await fetch_x_liked_tweets(user_id, access_token, max_results=20)
-                user_interests_text = summarize_likes_text(likes)
+            user_interests_text = get_user_interests_text()
 
             try:
                 insights = await generate_insights_from_transcript(transcript, user_interests=user_interests_text)

@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 
 import httpx
 
@@ -60,8 +60,8 @@ async def generate_insights_from_transcript(
     user_interests: str = "",
 ) -> Dict[str, Any]:
     """
-    Generate notes and artifacts (posts with title/url) from a transcript and optional user interests.
-    Returns a dict with notes, artifacts.
+    Generate high-quality reference notes from a transcript and optional user interests.
+    Returns a dict with notes plus an (unused) artifacts list for compatibility.
     """
     api_key = os.getenv("XAI_API_KEY")
     base_url = os.getenv("BASE_URL", "https://api.x.ai/v1")
@@ -73,19 +73,20 @@ async def generate_insights_from_transcript(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    excerpt = transcript[-1000:] if transcript and len(transcript) > 1000 else transcript
     prompt = (
-        "You act as a live note taker and X discovery assistant.\n"
-        "Given transcript excerpts and user interest signals, produce:\n"
-        "- notes: 1-2 concise bullet phrases of key points relevant from transcripts based on the user's interest. \n"
-        "- artifacts: up to 2 objects with fields title (short headline) and url (X post link if possible; otherwise a suggested search link).\n"
-        "Return JSON: {\"notes\": [..], \"artifacts\": [{\"title\": \"...\", \"url\": \"...\"}, ...]}.\n"
+        "You are a meticulous live note taker and X discovery assistant.\n"
+        "Given transcript excerpts and user interest signals, highlight the most important discussion topics and pointers the user will want to reference in the future.\n"
+        "Write 1-2 exceptionally high-quality bullet notes that capture context, decisions, or insights tailored to their interests. Keep each bullet succinct (no more than ~10 words).\n"
+        "Do not directly mention or describe the stated user interests; use them only to decide which transcript details matter.\n"
+        "Return JSON: {\"notes\": [..]}.\n"
         f"User interests: {user_interests or 'not provided'}\n"
-        f"Transcript excerpt:\n{transcript[:6000]}"
+        f"Transcript excerpt (last 1000 chars):\n{excerpt}"
     )
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "Return only valid JSON with fields notes and artifacts (each artifact has title and url)."},
+            {"role": "system", "content": "Return only valid JSON with a notes array."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.4,
@@ -106,14 +107,60 @@ async def generate_insights_from_transcript(
             else:
                 raise
         notes = parsed.get("notes") or []
-        artifacts = parsed.get("artifacts") or []
-        if not isinstance(notes, list) or not isinstance(artifacts, list):
+        if not isinstance(notes, list):
             raise ValueError("Malformed insights response")
-        norm_artifacts = []
-        for a in artifacts:
-            if isinstance(a, dict):
-                title = a.get("title")
-                url = a.get("url")
-                if title and url:
-                    norm_artifacts.append({"title": title, "url": url})
-        return {"notes": notes, "artifacts": norm_artifacts, "raw": data}
+        return {"notes": notes, "artifacts": [], "raw": data}
+
+
+async def summarize_user_interest_theme(likes: List[Dict[str, Any]], model: str = "grok-3-mini") -> str:
+    api_key = os.getenv("XAI_API_KEY")
+    base_url = os.getenv("BASE_URL", "https://api.x.ai/v1")
+    if not api_key:
+        raise ValueError("Missing XAI_API_KEY")
+
+    excerpts = []
+    for idx, item in enumerate(likes[:20], start=1):
+        text = (item.get("text") or "").replace("\n", " ").strip()
+        if text:
+            excerpts.append(f"{idx}. {text[:400]}")
+    context = "\n".join(excerpts) if excerpts else "No recent likes available."
+
+    url = f"{base_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    prompt = (
+        "You analyze a user's recent liked tweets on X. "
+        "Write 2-3 sentences that capture the themes, topics, or people they are most interested in lately. "
+        "Stay high-level (e.g., 'They follow AI founders and product strategy threads'). "
+        "Return JSON with a single field: {\"summary\": \"...\"}.\n"
+        f"Content from the recently liked posts:\n{context}"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Return only valid JSON with a summary field."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        parsed = {}
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1:
+                parsed = json.loads(content[start : end + 1])
+            else:
+                raise
+        summary = parsed.get("summary", "").strip()
+        if not summary:
+            raise ValueError("Summary missing in response")
+        return summary

@@ -79,6 +79,7 @@ function App() {
   useEffect(() => {
     fetchIntegrationStatus();
     fetchSessions();
+    ensureUserInterests();
   }, []);
 
   useEffect(() => {
@@ -196,6 +197,14 @@ function App() {
       setSaveMessage(null);
     } catch (err) {
       console.warn('Failed to fetch integration status', err);
+    }
+  };
+
+  const ensureUserInterests = async () => {
+    try {
+      await fetch(`${API_URL}/user-interests/generate`, { method: 'POST' });
+    } catch (err) {
+      console.warn('Failed to generate user interests', err);
     }
   };
 
@@ -494,7 +503,9 @@ function App() {
                             {combinedNotes.length > 0 ? (
                               <div className="flex flex-col gap-1 text-sm text-slate-200">
                                 {combinedNotes.map((note, idx) => (
-                                  <p key={idx}>{note}</p>
+                                  <p key={idx} className="note-fade">
+                                    {note}
+                                  </p>
                                 ))}
                               </div>
                             ) : (

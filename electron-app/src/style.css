@@ -25,3 +25,19 @@ body {
 .voice-orb {
   background: radial-gradient(circle at 30% 30%, rgba(59, 130, 246, 0.35), rgba(56, 189, 248, 0.08));
 }
+
+@keyframes noteFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.note-fade {
+  opacity: 0;
+  animation: noteFadeIn 0.4s ease forwards;
+}
