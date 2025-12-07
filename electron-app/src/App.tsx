@@ -53,6 +53,10 @@ function App() {
   const [integrationStatus, setIntegrationStatus] = useState<{ connected: boolean; updated_at?: string; has_keys?: boolean; user?: any }>({ connected: false });
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [selectedSession, setSelectedSession] = useState<SessionSummary | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchAnswer, setSearchAnswer] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -196,6 +200,41 @@ function App() {
     }
   };
 
+  const dummyArtifacts = [
+    {
+      type: 'post',
+      title: 'AI agent autonomy is shifting product timelines',
+      author: '@ai_researcher',
+      link: 'https://x.com/ai_researcher/status/123',
+    },
+    {
+      type: 'post',
+      title: 'React 19 + Suspense for data fetching lessons',
+      author: '@frontenddev',
+      link: 'https://x.com/frontenddev/status/456',
+    },
+    {
+      type: 'user',
+      title: 'Jane Doe — product + ML',
+      author: '@janedoe',
+      link: 'https://x.com/janedoe',
+    },
+  ];
+
+  const runSearch = async () => {
+    setSearching(true);
+    setSearchAnswer(null);
+    try {
+      // Placeholder: in real flow call Grok API with transcript context + query
+      await new Promise((res) => setTimeout(res, 800));
+      setSearchAnswer(`(Stub) Answer about "${searchQuery}" based on your recording context would appear here.`);
+    } catch (err: any) {
+      setSearchAnswer(`Search failed: ${err?.message || 'unknown error'}`);
+    } finally {
+      setSearching(false);
+    }
+  };
+
   const formatDuration = (seconds?: number) => {
     const val = typeof seconds === 'string' ? parseFloat(seconds) : seconds;
     if (val === undefined || val === null || Number.isNaN(val)) return '—';
@@ -263,7 +302,11 @@ function App() {
         <div className="recordings-list">
           {sessions.length === 0 && <p className="status-text">No recordings yet.</p>}
           {sessions.map((session, idx) => (
-            <div key={session.session_id} className="recording-row">
+            <button
+              key={session.session_id}
+              className="recording-row"
+              onClick={() => setSelectedSession(session)}
+            >
               <div className="recording-main">
                 <span className="recording-title">Recording {idx + 1} ({session.session_id})</span>
                 <span className="recording-meta">
@@ -273,7 +316,7 @@ function App() {
               <div className="recording-meta">
                 Duration: {formatDuration(session.duration_seconds)} | Chunks: {session.chunks ?? 0}
               </div>
-            </div>
+            </button>
           ))}
         </div>
       </div>
@@ -281,6 +324,53 @@ function App() {
       <div className="debug-section">
         <p>Backend WS: {WS_URL}</p>
       </div>
+
+      {selectedSession && (
+        <div className="modal-backdrop" onClick={() => setSelectedSession(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="card-title">Recording Details</p>
+                <p className="card-subtitle">
+                  Recording ID: {selectedSession.session_id.slice(0, 8)}… • {selectedSession.start_time ? new Date(selectedSession.start_time).toLocaleString() : 'Unknown start'}
+                </p>
+              </div>
+              <button className="btn-danger" onClick={() => setSelectedSession(null)}>Close</button>
+            </div>
+
+            <div className="modal-section">
+              <p className="section-title">X Artifacts</p>
+              <div className="artifact-grid">
+                {dummyArtifacts.map((item, i) => (
+                  <div key={i} className="artifact-card">
+                    <p className="artifact-type">{item.type === 'post' ? 'Post' : 'User'}</p>
+                    <p className="artifact-title">{item.title}</p>
+                    <p className="artifact-meta">by {item.author}</p>
+                    <a className="artifact-link" href={item.link} target="_blank" rel="noreferrer">View</a>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="modal-section">
+              <p className="section-title">Ask Grok about this recording</p>
+              <div className="search-row">
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Ask a question about what you heard..."
+                />
+                <button className="btn-primary" onClick={runSearch} disabled={searching || !searchQuery.trim()}>
+                  {searching ? 'Thinking...' : 'Ask'}
+                </button>
+              </div>
+              <div className="search-answer">
+                {searchAnswer ? <p>{searchAnswer}</p> : <p className="status-text">Responses will appear here.</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

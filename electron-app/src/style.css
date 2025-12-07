@@ -101,6 +101,7 @@ button:hover {
   background: #0b1220;
   border-radius: 0.4rem;
   border: 1px solid #1f2937;
+  cursor: pointer;
 }
 
 .recording-main {
@@ -115,6 +116,105 @@ button:hover {
 .recording-meta {
   font-size: 0.8rem;
   color: #94a3b8;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 20;
+}
+
+.modal {
+  width: min(720px, 95vw);
+  max-height: 90vh;
+  background: #0b1220;
+  border: 1px solid #1f2937;
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.section-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.artifact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.artifact-card {
+  background: #111827;
+  border: 1px solid #1f2937;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.artifact-type {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.artifact-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.artifact-meta {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.artifact-link {
+  margin-top: auto;
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.search-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.search-row input {
+  flex: 1;
+}
+
+.search-answer {
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  min-height: 60px;
 }
 
 .card {
