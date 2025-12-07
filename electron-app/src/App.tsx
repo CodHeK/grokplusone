@@ -75,7 +75,6 @@ function App() {
   const [insights, setInsights] = useState<InsightPayload[] | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
-  const [artifactsLoading, setArtifactsLoading] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -93,20 +92,35 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (selectedSession) {
-      setInsights([]);
-      setArtifacts([]);
-      fetchInsights(selectedSession.session_id);
-      // fetchArtifacts(selectedSession.session_id);
-      connectInsightsWs(selectedSession.session_id);
+    if (!selectedSession) {
+      return () => {
+        if (insightsWsRef.current) {
+          insightsWsRef.current.close();
+          insightsWsRef.current = null;
+        }
+      };
     }
+
+    setInsights([]);
+    setArtifacts([]);
+    fetchInsights(selectedSession.session_id);
+
+    if (!isConnected) {
+      if (insightsWsRef.current) {
+        insightsWsRef.current.close();
+        insightsWsRef.current = null;
+      }
+      return () => {};
+    }
+
+    connectInsightsWs(selectedSession.session_id);
     return () => {
       if (insightsWsRef.current) {
         insightsWsRef.current.close();
         insightsWsRef.current = null;
       }
     };
-  }, [selectedSession]);
+  }, [selectedSession, isConnected]);
 
   const startMicCapture = async () => {
     try {
@@ -306,26 +320,13 @@ function App() {
       const data = await res.json();
       const list = data.insights || [];
       setInsights(list);
+      setArtifacts(list.flatMap((item: InsightPayload) => item.artifacts || []));
     } catch (err) {
       console.warn('Failed to fetch insights', err);
       setInsights([]);
-    } finally {
-      setInsightsLoading(false);
-    }
-  };
-
-  const fetchArtifacts = async (sessionId: string) => {
-    setArtifactsLoading(true);
-    try {
-      const res = await fetch(`${API_URL}/sessions/${sessionId}/artifacts`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setArtifacts(data.artifacts || []);
-    } catch (err) {
-      console.warn('Failed to fetch artifacts', err);
       setArtifacts([]);
     } finally {
-      setArtifactsLoading(false);
+      setInsightsLoading(false);
     }
   };
 
@@ -561,8 +562,8 @@ function App() {
                         )}
                       </div>
                       <div className="flex flex-col gap-2">
-                        {artifactsLoading && <p className="text-sm text-slate-400">Loading artifacts…</p>}
-                        {!artifactsLoading &&
+                        {insightsLoading && <p className="text-sm text-slate-400">Loading artifacts…</p>}
+                        {!insightsLoading &&
                           artifacts.map((art, idx) => (
                             <a
                               key={idx}
@@ -575,7 +576,7 @@ function App() {
                               <p className="text-xs text-slate-500 break-all">{art.url}</p>
                             </a>
                           ))}
-                        {!artifactsLoading && artifacts.length === 0 && <p className="text-sm text-slate-400">No artifacts yet.</p>}
+                        {!insightsLoading && artifacts.length === 0 && <p className="text-sm text-slate-400">No artifacts yet.</p>}
                       </div>
                     </div>
                   )}

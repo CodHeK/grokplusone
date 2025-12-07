@@ -200,11 +200,18 @@ def insights_path(session_id: str) -> Path:
     return STORAGE_ROOT / session_id / "insights.jsonl"
 
 
-def append_insights(session_id: str, payload: Dict[str, Any]) -> None:
+def append_insights(session_id: str, payload: Dict[str, Any], dedupe: bool = True) -> bool:
+    if dedupe:
+        cached = load_insights(session_id)
+        if cached:
+            last = cached[-1]
+            if (last.get("notes") or []) == (payload.get("notes") or []) and (last.get("artifacts") or []) == (payload.get("artifacts") or []):
+                return False
     path = insights_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload) + "\n")
+    return True
 
 
 def load_insights(session_id: str) -> list:
@@ -633,8 +640,9 @@ async def insights_websocket(ws: WebSocket, session_id: str):
                 "artifacts": artifacts_payload.get("artifacts", []),
                 "artifact_query": artifacts_payload.get("query"),
             }
-            append_insights(session_id, combined_payload)
-            await ws.send_text(json.dumps({"type": "insights", "data": combined_payload}))
+            appended = append_insights(session_id, combined_payload)
+            if appended:
+                await ws.send_text(json.dumps({"type": "insights", "data": combined_payload}))
     except WebSocketDisconnect:
         print(f"Insights subscriber disconnected for session {session_id}")
     except Exception as e:
