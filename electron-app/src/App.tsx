@@ -14,6 +14,13 @@ type SessionSummary = {
   title?: string;
 };
 
+type InsightPayload = {
+  timestamp?: string;
+  notes: string[];
+  queries: string[];
+  entities: string[];
+};
+
 // Convert Float32 audio to 16-bit PCM
 function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
   const int16Array = new Int16Array(float32Array.length);
@@ -58,9 +65,12 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchAnswer, setSearchAnswer] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+  const [insights, setInsights] = useState<InsightPayload[] | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const insightsWsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     return () => stopCapture();
@@ -71,6 +81,19 @@ function App() {
     fetchIntegrationStatus();
     fetchSessions();
   }, []);
+
+  useEffect(() => {
+    if (selectedSession) {
+      fetchInsights(selectedSession.session_id);
+      connectInsightsWs(selectedSession.session_id);
+    }
+    return () => {
+      if (insightsWsRef.current) {
+        insightsWsRef.current.close();
+        insightsWsRef.current = null;
+      }
+    };
+  }, [selectedSession]);
 
   const startMicCapture = async () => {
     try {
@@ -86,6 +109,8 @@ function App() {
       });
 
       connectStream(stream);
+      // Optimistically fetch sessions so the new session appears
+      setTimeout(fetchSessions, 500);
     } catch (err: any) {
       console.error(err);
       const friendly =
@@ -216,11 +241,55 @@ function App() {
     }
   };
 
-  const dummyArtifacts = [
-    { type: 'post', title: 'AI agent autonomy is shifting product timelines', author: '@ai_researcher', link: 'https://x.com/ai_researcher/status/123' },
-    { type: 'post', title: 'React 19 + Suspense for data fetching lessons', author: '@frontenddev', link: 'https://x.com/frontenddev/status/456' },
-    { type: 'user', title: 'Jane Doe — product + ML', author: '@janedoe', link: 'https://x.com/janedoe' },
-  ];
+  const connectInsightsWs = (sessionId: string) => {
+    if (!sessionId) return;
+    const wsUrl = `${API_URL.replace('http', 'ws')}/ws/insights/${sessionId}`;
+    try {
+      const ws = new WebSocket(wsUrl);
+      insightsWsRef.current = ws;
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'insights_init' && payload.insights) {
+            setInsights(payload.insights);
+          } else if (payload.type === 'insights' && payload.data) {
+            setInsights((prev) => {
+              const next = prev ? [...prev, payload.data] : [payload.data];
+              return next;
+            });
+          }
+        } catch (e) {
+          console.warn('Failed to parse insights ws message', e);
+        }
+      };
+
+      ws.onclose = () => {
+        insightsWsRef.current = null;
+      };
+
+      ws.onerror = (err) => {
+        console.warn('Insights WS error', err);
+      };
+    } catch (err) {
+      console.warn('Failed to open insights websocket', err);
+    }
+  };
+  const fetchInsights = async (sessionId: string) => {
+    setInsightsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/sessions/${sessionId}/insights`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const list = data.insights || [];
+      setInsights(list);
+    } catch (err) {
+      console.warn('Failed to fetch insights', err);
+      setInsights(null);
+    } finally {
+      setInsightsLoading(false);
+    }
+  };
 
   const runSearch = async () => {
     setSearching(true);
@@ -411,18 +480,41 @@ function App() {
                     <p className="text-sm uppercase tracking-[0.15em] text-slate-400">X artifacts</p>
                     <span className="pill-on">Live link</span>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {dummyArtifacts.map((item, i) => (
-                      <div key={i} className="rounded-xl border border-white/10 bg-slate-900/70 p-3 flex flex-col gap-1">
-                        <p className="text-xs text-slate-400">{item.type === 'post' ? 'Post' : 'User'}</p>
-                        <p className="font-semibold">{item.title}</p>
-                        <p className="text-xs text-slate-500">by {item.author}</p>
-                        <a className="text-sm text-blue-300 hover:underline mt-1" href={item.link} target="_blank" rel="noreferrer">
-                          View on X
-                        </a>
-                      </div>
-                    ))}
-                  </div>
+                  {insightsLoading && <p className="text-sm text-slate-400">Loading insights…</p>}
+                  {!insightsLoading && insights && (
+                    <div className="flex flex-col gap-3 max-h-72 overflow-y-auto pr-1">
+                      {insights.map((item, idx) => (
+                        <div key={idx} className="rounded-xl border border-white/10 bg-slate-900/70 p-3 flex flex-col gap-2">
+                          <p className="text-xs text-slate-500">
+                            {item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : 'Insight'}
+                          </p>
+                          <ul className="list-disc list-inside text-sm text-slate-200 space-y-1">
+                            {item.notes?.map((n, i) => (
+                              <li key={i}>{n}</li>
+                            ))}
+                            {(!item.notes || item.notes.length === 0) && <li className="text-slate-500">No notes</li>}
+                          </ul>
+                          <div className="flex flex-wrap gap-2">
+                            {item.queries?.map((q, i) => (
+                              <span key={i} className="rounded-full bg-white/10 border border-white/15 px-3 py-1 text-xs text-slate-100">
+                                {q}
+                              </span>
+                            ))}
+                            {(!item.queries || item.queries.length === 0) && <span className="text-xs text-slate-500">No queries</span>}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {item.entities?.map((e, i) => (
+                              <span key={i} className="rounded-full bg-blue-500/15 text-blue-100 px-3 py-1 text-xs">
+                                {e}
+                              </span>
+                            ))}
+                            {(!item.entities || item.entities.length === 0) && <span className="text-xs text-slate-500">No entities</span>}
+                          </div>
+                        </div>
+                      ))}
+                      {insights.length === 0 && <p className="text-sm text-slate-400">No insights yet.</p>}
+                    </div>
+                  )}
                 </div>
 
                 <div className="rounded-2xl border border-white/5 bg-white/5 p-4 flex flex-col gap-3">

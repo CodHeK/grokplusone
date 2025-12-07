@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-from llm_utils import generate_title_from_transcript
+from llm_utils import generate_title_from_transcript, generate_insights_from_transcript
 
 load_dotenv()
 
@@ -38,6 +38,7 @@ STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", "storage"))
 # Target ~20–30 seconds per chunk for long-form; adjust via env if needed
 CHUNK_CHAR_TARGET = int(os.getenv("CHUNK_CHAR_TARGET", "20"))
 CHUNK_FLUSH_SECONDS = int(os.getenv("CHUNK_FLUSH_SECONDS", "20"))
+INSIGHTS_INTERVAL_SECONDS = int(os.getenv("INSIGHTS_INTERVAL_SECONDS", "5"))
 INTEGRATIONS_DIR = STORAGE_ROOT / "integrations"
 INTEGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
 X_CLIENT_ID = os.getenv("X_CLIENT_ID", "V3JiQ2tGZU9OaWhkeFZCWjU4UjA6MTpjaQ")
@@ -85,6 +86,67 @@ def base64url_encode(data: bytes) -> str:
 def build_code_challenge(verifier: str) -> str:
     digest = hashlib.sha256(verifier.encode("utf-8")).digest()
     return base64url_encode(digest)
+
+
+async def fetch_x_liked_tweets(user_id: str, access_token: str, max_results: int = 10) -> list:
+    """Fetch recent liked tweets for personalization."""
+    url = f"https://api.x.com/2/users/{user_id}/liked_tweets"
+    params = {"max_results": max(10, min(max_results, 100))}
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            return data.get("data", []) or []
+    except Exception:
+        return []
+
+
+def summarize_likes_text(likes: list, max_items: int = 5, max_len: int = 200) -> str:
+    """Return a brief summary string of liked tweet texts."""
+    if not likes:
+        return ""
+    snippets = []
+    for item in likes[:max_items]:
+        text = (item.get("text") or "").replace("\n", " ").strip()
+        if text:
+            snippets.append(text[:max_len])
+    if not snippets:
+        return ""
+    return " | ".join(snippets)
+
+
+def insights_path(session_id: str) -> Path:
+    return STORAGE_ROOT / session_id / "insights.jsonl"
+
+
+def append_insights(session_id: str, payload: Dict[str, Any]) -> None:
+    path = insights_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload) + "\n")
+
+
+def load_insights(session_id: str) -> list:
+    path = insights_path(session_id)
+    if not path.exists():
+        return []
+    items = []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    items.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return items
 
 
 def session_meta_path(session_id: str) -> Path:
@@ -227,7 +289,7 @@ async def generate_session_title(session_id: str):
     except Exception:
         meta = {}
 
-    # If already titled, return cached
+    # If already titled with a real value (not placeholder), return cached
     if meta.get("title"):
         return {"title": meta["title"], "cached": True}
 
@@ -246,6 +308,99 @@ async def generate_session_title(session_id: str):
 
     return {"title": title, "cached": False}
 
+
+@app.get("/sessions/{session_id}/insights")
+async def get_session_insights(session_id: str):
+    meta_file = session_meta_path(session_id)
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    transcript = read_session_text(session_id)
+    if not transcript:
+        raise HTTPException(status_code=400, detail="No transcript found for this session")
+
+    # Return cached insights if present
+    cached = load_insights(session_id)
+    if cached:
+        return {"insights": cached}
+
+    # Otherwise generate once on demand
+    x_data = load_integration("x")
+    user_interests_text = ""
+    access_token = x_data.get("access_token")
+    user_id = x_data.get("user", {}).get("data", {}).get("id")
+    if access_token and user_id:
+        likes = await fetch_x_liked_tweets(user_id, access_token, max_results=20)
+        user_interests_text = summarize_likes_text(likes)
+
+    try:
+        insights = await generate_insights_from_transcript(transcript, user_interests=user_interests_text)
+        payload = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "notes": insights.get("notes", []),
+            "queries": insights.get("queries", []),
+            "entities": insights.get("entities", []),
+        }
+        append_insights(session_id, payload)
+        return {"insights": [payload]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Insights generation failed: {e}")
+
+
+@app.websocket("/ws/insights/{session_id}")
+async def insights_websocket(ws: WebSocket, session_id: str):
+    await ws.accept()
+    print(f"Insights subscriber connected for session {session_id}")
+
+    meta_file = session_meta_path(session_id)
+    if not meta_file.exists():
+        await ws.send_text(json.dumps({"error": "Session not found"}))
+        await ws.close()
+        return
+
+    # Send cached insights immediately
+    cached = load_insights(session_id)
+    await ws.send_text(json.dumps({"type": "insights_init", "insights": cached}))
+
+    last_len = 0
+    try:
+        while True:
+            await asyncio.sleep(INSIGHTS_INTERVAL_SECONDS)
+            transcript = read_session_text(session_id, max_chars=4000)
+            if not transcript:
+                continue
+            if len(transcript) == last_len:
+                continue
+            last_len = len(transcript)
+
+            x_data = load_integration("x")
+            user_interests_text = ""
+            access_token = x_data.get("access_token")
+            user_id = x_data.get("user", {}).get("data", {}).get("id")
+            if access_token and user_id:
+                likes = await fetch_x_liked_tweets(user_id, access_token, max_results=20)
+                user_interests_text = summarize_likes_text(likes)
+
+            try:
+                insights = await generate_insights_from_transcript(transcript, user_interests=user_interests_text)
+            except Exception as e:
+                await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
+                continue
+
+            payload = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "notes": insights.get("notes", []),
+                "queries": insights.get("queries", []),
+                "entities": insights.get("entities", []),
+            }
+            append_insights(session_id, payload)
+            await ws.send_text(json.dumps({"type": "insights", "data": payload}))
+    except WebSocketDisconnect:
+        print(f"Insights subscriber disconnected for session {session_id}")
+    except Exception as e:
+        print(f"Insights WS error for session {session_id}: {e}")
+    finally:
+        await ws.close()
 
 @app.get("/integrations/x/oauth/start")
 async def start_x_oauth():
@@ -369,8 +524,12 @@ async def audio_websocket(client_ws: WebSocket):
         "duration_seconds": None,
         "status": "active",
         "chunks": 0,
+        "title": None,
     }
     write_session_meta(session_id, session_meta)
+    # Initialize transcript file
+    transcript_path = session_dir / "transcript.txt"
+    transcript_path.write_text("", encoding="utf-8")
 
     if not GROK_API_KEY:
         print("Error: XAI_API_KEY not found")
