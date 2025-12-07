@@ -38,7 +38,7 @@ app.add_middleware(
 )
 
 # Grok Voice Config
-GROK_API_KEY = os.getenv("XAI_API_KEY", "xai-U3SgU6NpZaSL7FBx79GgiFsKPMIldSCjPGEFrR2OHve5EbubS4HJpHHI96sqeMSWa5O2l7IPPY8kkZEy")
+GROK_API_KEY = os.getenv("XAI_API_KEY")
 BASE_URL = os.getenv("BASE_URL", "https://api.x.ai/v1")
 WS_URL = BASE_URL.replace("https://", "wss://").replace("http://", "ws://") + "/realtime/audio/transcriptions"
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", "storage"))
@@ -49,13 +49,13 @@ INSIGHTS_INTERVAL_SECONDS = int(os.getenv("INSIGHTS_INTERVAL_SECONDS", "5"))
 INTEGRATIONS_DIR = STORAGE_ROOT / "integrations"
 INTEGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
 USER_INTERESTS_FILE = STORAGE_ROOT / "user_interests.json"
-X_CLIENT_ID = os.getenv("X_CLIENT_ID", "V3JiQ2tGZU9OaWhkeFZCWjU4UjA6MTpjaQ")
-X_CLIENT_SECRET = os.getenv("X_CLIENT_SECRET", "bS-gBbRZfF58DwQeBPJpZO3FQRxjFUfuS_EGv8a21I1U2yHa_Q")
+X_CLIENT_ID = os.getenv("X_CLIENT_ID")
+X_CLIENT_SECRET = os.getenv("X_CLIENT_SECRET")
 X_REDIRECT_URI = os.getenv("X_REDIRECT_URI", "http://localhost:8000/integrations/x/oauth/callback")
 X_OAUTH_SCOPES = os.getenv("X_OAUTH_SCOPES", "tweet.read users.read follows.read like.read offline.access")
 X_AUTH_URL = "https://twitter.com/i/oauth2/authorize"
 X_TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
-X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "AAAAAAAAAAAAAAAAAAAAAAl25wEAAAAAZmG8VeUkzc69eSkI7Y%2FL2cUh58I%3DVmeNqXMh5yX5Xp3bZDKdLoixbLcTIZdFW8ASJZTjAGb7QvGvg0")
+X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 TTS_VOICE = os.getenv("TTS_VOICE", "Ara")
 TTS_FORMAT = os.getenv("TTS_FORMAT", "mp3")
 VOICE_QUESTION_SUPPRESSIONS: Set[str] = set()
