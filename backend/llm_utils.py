@@ -89,7 +89,7 @@ async def generate_insights_from_transcript(
             {"role": "system", "content": "Return only valid JSON with a notes array."},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.4,
+        "temperature": 0.2,
     }
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(url, headers=headers, json=payload)
