@@ -21,6 +21,7 @@ from llm_utils import (
     generate_insights_from_transcript,
     summarize_user_interest_theme,
     generate_artifact_search_query,
+    answer_transcript_question,
 )
 
 load_dotenv()
@@ -64,6 +65,10 @@ class XIntegrationConfig(BaseModel):
     access_token_secret: Optional[str] = Field(default=None, description="Access Token Secret")
     connected: bool = False
     updated_at: Optional[str] = None
+
+
+class SessionQuestion(BaseModel):
+    question: str = Field(..., min_length=1)
 
 
 def integration_path(name: str) -> Path:
@@ -551,6 +556,30 @@ async def build_session_artifacts_response(
 @app.get("/sessions/{session_id}/artifacts")
 async def get_session_artifacts(session_id: str):
     return await build_session_artifacts_response(session_id, force_generate=False, store_result=True)
+
+
+@app.post("/sessions/{session_id}/ask")
+async def ask_session_question(session_id: str, payload: SessionQuestion):
+    meta_file = session_meta_path(session_id)
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    transcript = read_session_text(session_id, max_chars=8000)
+    if not transcript:
+        raise HTTPException(status_code=400, detail="No transcript found for this session")
+
+    user_interests_text = get_user_interests_text()
+
+    try:
+        answer = await answer_transcript_question(
+            question=payload.question,
+            transcript=transcript,
+            user_interests=user_interests_text,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Question answering failed: {e}")
+
+    return {"answer": answer}
 
 
 @app.websocket("/ws/insights/{session_id}")

@@ -329,11 +329,25 @@ function App() {
   };
 
   const runSearch = async () => {
+    if (!selectedSession) {
+      setSearchAnswer('Open a recording to ask questions.');
+      return;
+    }
+    if (!searchQuery.trim()) return;
     setSearching(true);
     setSearchAnswer(null);
     try {
-      await new Promise((res) => setTimeout(res, 800));
-      setSearchAnswer(`(Stub) Answer about "${searchQuery}" based on your recording context would appear here.`);
+      const res = await fetch(`${API_URL}/sessions/${selectedSession.session_id}/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: searchQuery }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setSearchAnswer(data.answer || 'No answer available.');
     } catch (err: any) {
       setSearchAnswer(`Search failed: ${err?.message || 'unknown error'}`);
     } finally {
@@ -492,7 +506,7 @@ function App() {
         {selectedSession && (
           <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 px-4" onClick={() => setSelectedSession(null)}>
             <div
-              className="w-full max-w-4xl rounded-3xl bg-slate-900 border border-white/10 p-6 shadow-2xl shadow-blue-500/10"
+              className="w-full max-w-5xl max-h-[120vh] overflow-y-auto rounded-3xl bg-slate-900 border border-white/10 p-6 shadow-2xl shadow-blue-500/10"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-start justify-between gap-4">
@@ -561,6 +575,39 @@ function App() {
                       </div>
                     </div>
                   )}
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-white/5 bg-white/5 p-4">
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.15em] text-slate-400">Ask Grok</p>
+                      <p className="text-lg font-semibold text-slate-100">Question about this recording</p>
+                    </div>
+                    {searchAnswer && (
+                      <button className="text-xs text-blue-300 hover:text-blue-200" onClick={() => setSearchAnswer(null)}>
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input
+                      className="flex-1 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="e.g. What were the next steps we talked about?"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                    <button
+                      onClick={runSearch}
+                      disabled={!searchQuery || searching}
+                      className="rounded-xl bg-gradient-to-r from-blue-500 to-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {searching ? 'Asking…' : 'Ask Grok'}
+                    </button>
+                  </div>
+                  {searching && !searchAnswer && <p className="text-sm text-slate-400">Thinking…</p>}
+                  {searchAnswer && <p className="text-sm text-slate-300">{searchAnswer}</p>}
                 </div>
               </div>
             </div>

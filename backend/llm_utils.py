@@ -216,3 +216,51 @@ async def summarize_user_interest_theme(likes: List[Dict[str, Any]], model: str 
         if not summary:
             raise ValueError("Summary missing in response")
         return summary
+
+
+async def answer_transcript_question(
+    question: str,
+    transcript: str,
+    user_interests: str = "",
+    model: str = "grok-3-mini",
+) -> str:
+    if not question or not question.strip():
+        raise ValueError("Question must not be empty")
+
+    api_key = os.getenv("XAI_API_KEY")
+    base_url = os.getenv("BASE_URL", "https://api.x.ai/v1")
+    if not api_key:
+        raise ValueError("Missing XAI_API_KEY")
+
+    excerpt = transcript[-4000:] if len(transcript) > 4000 else transcript
+
+    url = f"{base_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    prompt = (
+        "You answer questions about a transcript."
+        "Provide a concise (max ~3-4 sentences) answer grounded only in the provided transcript excerpt."
+        "If unsure, say you don't know."
+        f"\nUser interests (for relevance only): {user_interests or 'not provided'}"
+        f"\nQuestion: {question.strip()}"
+        f"\nTranscript excerpt:\n{excerpt}"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You provide concise helpful answers (<=2 sentences)."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        answer = content.strip()
+        if not answer:
+            raise ValueError("Empty answer from model")
+        return answer
