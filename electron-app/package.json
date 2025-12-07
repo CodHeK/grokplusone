@@ -1,0 +1,29 @@
+{
+  "name": "listening-buddy-electron",
+  "version": "0.1.0",
+  "description": "Listening Buddy desktop app (macOS) with React + Electron.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host",
+    "dev:electron": "wait-on http://localhost:5173 && cross-env ELECTRON_START_URL=http://localhost:5173 electron .",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.4",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.2.0",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^31.7.1",
+    "typescript": "~5.9.3",
+    "vite": "^4.5.0",
+    "wait-on": "^7.2.0"
+  }
+}

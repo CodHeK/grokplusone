@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+websockets
+python-dotenv
+httpx
+numpy
+pydantic
+python-multipart
+scipy
+# chromadb <- Commented out for now to fix install error
