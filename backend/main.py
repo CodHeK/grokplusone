@@ -23,6 +23,7 @@ from llm_utils import (
     generate_artifact_search_query,
     answer_transcript_question,
 )
+from tts_service import synthesize_speech, TTSServiceError
 
 load_dotenv()
 
@@ -55,6 +56,8 @@ X_OAUTH_SCOPES = os.getenv("X_OAUTH_SCOPES", "tweet.read users.read follows.read
 X_AUTH_URL = "https://twitter.com/i/oauth2/authorize"
 X_TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "AAAAAAAAAAAAAAAAAAAAAAl25wEAAAAAZmG8VeUkzc69eSkI7Y%2FL2cUh58I%3DVmeNqXMh5yX5Xp3bZDKdLoixbLcTIZdFW8ASJZTjAGb7QvGvg0")
+TTS_VOICE = os.getenv("TTS_VOICE", "Ara")
+TTS_FORMAT = os.getenv("TTS_FORMAT", "mp3")
 
 
 class XIntegrationConfig(BaseModel):
@@ -589,6 +592,41 @@ async def ask_session_question(session_id: str, payload: SessionQuestion):
     return {"answer": answer}
 
 
+@app.post("/sessions/{session_id}/questions")
+async def ask_realtime_question(session_id: str, payload: SessionQuestion):
+    meta_file = session_meta_path(session_id)
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    transcript = read_session_text(session_id, max_chars=8000)
+    if not transcript:
+        raise HTTPException(status_code=400, detail="No transcript found for this session")
+
+    user_interests_text = get_user_interests_text()
+
+    try:
+        answer = await answer_transcript_question(
+            question=payload.question,
+            transcript=transcript,
+            user_interests=user_interests_text,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Question answering failed: {exc}")
+
+    try:
+        audio_bytes, mime_type = await synthesize_speech(answer, voice=TTS_VOICE, response_format=TTS_FORMAT)
+    except TTSServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+    return {
+        "answer": answer,
+        "audio_base64": audio_base64,
+        "audio_mime_type": mime_type,
+        "voice": TTS_VOICE,
+    }
+
+
 @app.websocket("/ws/insights/{session_id}")
 async def insights_websocket(ws: WebSocket, session_id: str):
     await ws.accept()
@@ -779,6 +817,14 @@ async def audio_websocket(client_ws: WebSocket):
     transcript_path = session_dir / "transcript.txt"
     transcript_path.write_text("", encoding="utf-8")
 
+    try:
+        await client_ws.send_text(json.dumps({"type": "session_started", "session_id": session_id}))
+    except WebSocketDisconnect:
+        print("Client disconnected before session start ack")
+        return
+    except Exception as exc:
+        print(f"Failed to notify client about session start: {exc}")
+
     if not GROK_API_KEY:
         print("Error: XAI_API_KEY not found")
         await client_ws.close(code=1000, reason="Server missing API Key")
@@ -843,9 +889,25 @@ async def audio_websocket(client_ws: WebSocket):
                             if transcript:
                                 if is_final:
                                     print(f"✅ Final: {transcript}")
+                                    normalized_transcript = transcript.strip()
                                     # Append final text to single transcript file
-                                    with transcript_path.open("a", encoding="utf-8") as f:
-                                        f.write(transcript.strip() + "\n")
+                                    if normalized_transcript:
+                                        with transcript_path.open("a", encoding="utf-8") as f:
+                                            f.write(normalized_transcript + "\n")
+                                        try:
+                                            await client_ws.send_text(
+                                                json.dumps(
+                                                    {
+                                                        "type": "transcript_final",
+                                                        "session_id": session_id,
+                                                        "text": normalized_transcript,
+                                                    }
+                                                )
+                                            )
+                                        except WebSocketDisconnect:
+                                            print("Client disconnected while sending transcript")
+                                        except Exception as exc:
+                                            print(f"Failed to forward transcript to client: {exc}")
                                     chunk_counter += 1
                                     session_meta["chunks"] = chunk_counter
                                     # update duration/end_time on each final so UI sees progress

@@ -75,10 +75,21 @@ function App() {
   const [insights, setInsights] = useState<InsightPayload[] | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [voiceQuestionArmed, setVoiceQuestionArmed] = useState(false);
+  const [voiceQuestionPrompt, setVoiceQuestionPrompt] = useState<string | null>(null);
+  const [voiceQuestionAnswer, setVoiceQuestionAnswer] = useState<{ question: string; answer: string } | null>(null);
+  const [voiceQuestionInFlight, setVoiceQuestionInFlight] = useState(false);
+  const [voiceQuestionError, setVoiceQuestionError] = useState<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const insightsWsRef = useRef<WebSocket | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const voiceQuestionArmedRef = useRef(false);
+  const voiceQuestionInFlightRef = useRef(false);
+  const activeSessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     return () => stopCapture();
@@ -122,6 +133,142 @@ function App() {
     };
   }, [selectedSession, isConnected]);
 
+  const cleanupAudioPlayback = () => {
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current.src = '';
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+  };
+
+  const playVoiceAnswer = (audioBase64: string, mimeType?: string) => {
+    if (!audioBase64) return;
+    cleanupAudioPlayback();
+    const byteCharacters = atob(audioBase64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], { type: mimeType || 'audio/mpeg' });
+    const url = URL.createObjectURL(blob);
+    audioUrlRef.current = url;
+    if (!audioElementRef.current) {
+      audioElementRef.current = new Audio();
+    }
+    const element = audioElementRef.current;
+    element.src = url;
+    element.play().catch((err) => console.warn('Voice playback failed', err));
+  };
+
+  const sendVoiceQuestion = async (sessionId: string, questionText: string) => {
+    try {
+      const res = await fetch(`${API_URL}/sessions/${sessionId}/questions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: questionText }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setVoiceQuestionAnswer({ question: questionText, answer: data.answer || 'No answer available.' });
+      if (data.audio_base64) {
+        playVoiceAnswer(data.audio_base64, data.audio_mime_type);
+      }
+    } catch (err: any) {
+      setVoiceQuestionError(`Voice answer failed: ${err?.message || 'unknown error'}`);
+    } finally {
+      setVoiceQuestionInFlight(false);
+    }
+  };
+
+  const handleVoiceQuestionTranscript = (sessionId: string | null, transcriptText: string) => {
+    if (!sessionId) {
+      setVoiceQuestionError('Session not ready for questions.');
+      setVoiceQuestionArmed(false);
+      return;
+    }
+    const trimmed = (transcriptText || '').trim();
+    if (!trimmed) return;
+    setVoiceQuestionArmed(false);
+    setVoiceQuestionPrompt(trimmed);
+    setVoiceQuestionAnswer(null);
+    setVoiceQuestionError(null);
+    setVoiceQuestionInFlight(true);
+    sendVoiceQuestion(sessionId, trimmed);
+  };
+
+  const toggleVoiceQuestion = () => {
+    if (voiceQuestionInFlight) return;
+    if (!activeSessionId) {
+      setVoiceQuestionError('Session not ready yet.');
+      return;
+    }
+    if (voiceQuestionArmed) {
+      setVoiceQuestionArmed(false);
+      setVoiceQuestionPrompt(null);
+      setVoiceQuestionError(null);
+    } else {
+      setVoiceQuestionArmed(true);
+      setVoiceQuestionPrompt(null);
+      setVoiceQuestionError(null);
+    }
+  };
+
+  const handleAudioServerMessage = (event: MessageEvent<any>) => {
+    if (typeof event.data !== 'string') return;
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload.type === 'session_started' && payload.session_id) {
+        setActiveSessionId(payload.session_id);
+        return;
+      }
+      if (payload.type === 'transcript_final' && typeof payload.text === 'string') {
+        const sessionForMessage: string | null = payload.session_id || activeSessionIdRef.current;
+        if (
+          voiceQuestionArmedRef.current &&
+          !voiceQuestionInFlightRef.current &&
+          sessionForMessage &&
+          (!activeSessionIdRef.current || sessionForMessage === activeSessionIdRef.current)
+        ) {
+          handleVoiceQuestionTranscript(sessionForMessage, payload.text);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to parse audio websocket message', err);
+    }
+  };
+
+  useEffect(() => {
+    voiceQuestionArmedRef.current = voiceQuestionArmed;
+  }, [voiceQuestionArmed]);
+
+  useEffect(() => {
+    voiceQuestionInFlightRef.current = voiceQuestionInFlight;
+  }, [voiceQuestionInFlight]);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    return () => {
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.src = '';
+      }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
+    };
+  }, []);
+
   const startMicCapture = async () => {
     try {
       setStatus('Requesting microphone...');
@@ -152,6 +299,13 @@ function App() {
 
   const connectStream = (stream: MediaStream) => {
     streamRef.current = stream;
+    setVoiceQuestionArmed(false);
+    setVoiceQuestionPrompt(null);
+    setVoiceQuestionAnswer(null);
+    setVoiceQuestionError(null);
+    setVoiceQuestionInFlight(false);
+    setActiveSessionId(null);
+    cleanupAudioPlayback();
 
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -161,6 +315,8 @@ function App() {
       setStatus('Streaming microphone audio to backend...');
       processAudio(stream);
     };
+
+    ws.onmessage = handleAudioServerMessage;
 
     ws.onclose = () => {
       setIsConnected(false);
@@ -206,6 +362,13 @@ function App() {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
+    cleanupAudioPlayback();
+    setVoiceQuestionArmed(false);
+    setVoiceQuestionPrompt(null);
+    setVoiceQuestionAnswer(null);
+    setVoiceQuestionError(null);
+    setVoiceQuestionInFlight(false);
+    setActiveSessionId(null);
     setIsConnected(false);
     setStatus('Stopped');
     const latest = await fetchSessions();
@@ -436,6 +599,45 @@ function App() {
                     </button>
                   )}
                 </div>
+                {isConnected && (
+                  <div className="w-full rounded-2xl border border-white/10 bg-slate-900/70 p-4 flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Voice Question</p>
+                        <p className="text-sm font-semibold text-slate-100">Ask about this transcript</p>
+                      </div>
+                      <span
+                        className={`text-xs font-semibold px-3 py-1 rounded-full ${
+                          voiceQuestionInFlight ? 'bg-blue-500/20 text-blue-100' : voiceQuestionArmed ? 'bg-emerald-500/20 text-emerald-100' : 'bg-slate-800 text-slate-300'
+                        }`}
+                      >
+                        {voiceQuestionInFlight ? 'Answering' : voiceQuestionArmed ? 'Listening' : 'Idle'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Enable this mode and ask your question aloud. The next final transcript chunk will be routed through /questions and answered with speech.
+                    </p>
+                    <button
+                      onClick={toggleVoiceQuestion}
+                      disabled={!activeSessionId || voiceQuestionInFlight}
+                      className="rounded-2xl bg-gradient-to-r from-blue-500 to-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {voiceQuestionInFlight ? 'Answering…' : voiceQuestionArmed ? 'Listening for your question…' : 'Ask about transcript'}
+                    </button>
+                    {voiceQuestionPrompt && (
+                      <p className="text-xs text-slate-300">
+                        <span className="font-semibold text-slate-100">You asked:</span> {voiceQuestionPrompt}
+                      </p>
+                    )}
+                    {voiceQuestionAnswer && !voiceQuestionInFlight && (
+                      <div className="text-xs text-slate-300">
+                        <p className="font-semibold text-slate-100">Answer</p>
+                        <p>{voiceQuestionAnswer.answer}</p>
+                      </div>
+                    )}
+                    {voiceQuestionError && <p className="text-xs text-red-300">{voiceQuestionError}</p>}
+                  </div>
+                )}
               </div>
 
               <div className="glass rounded-2xl p-4">
