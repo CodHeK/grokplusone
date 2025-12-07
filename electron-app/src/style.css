@@ -79,3 +79,92 @@ button:hover {
   font-size: 0.75rem;
   color: #64748b;
 }
+
+.link-button {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  flex: none;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid #334155;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.card-subtitle {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.pill {
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.pill-on {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+
+.pill-off {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  color: #e2e8f0;
+}
+
+input {
+  background: #0b1220;
+  border: 1px solid #334155;
+  border-radius: 0.4rem;
+  padding: 0.6rem 0.7rem;
+  color: var(--text-color);
+}
+
+input:focus {
+  outline: 1px solid var(--primary);
+  border-color: var(--primary);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.actions .meta {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import './style.css';
 
 const WS_URL = 'ws://localhost:8000/ws/audio';
+const API_URL = 'http://localhost:8000';
 const TARGET_SAMPLE_RATE = 16000;
 
 // Convert Float32 audio to 16-bit PCM
@@ -41,6 +42,8 @@ function downsampleBuffer(buffer: Float32Array, sampleRate: number, outSampleRat
 function App() {
   const [status, setStatus] = useState('Ready to listen');
   const [isConnected, setIsConnected] = useState(false);
+  const [integrationStatus, setIntegrationStatus] = useState<{ connected: boolean; updated_at?: string; has_keys?: boolean; user?: any }>({ connected: false });
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -49,6 +52,10 @@ function App() {
     // On macOS the main process already asked for mic access, but we still handle renderer errors.
     return () => stopCapture();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    fetchIntegrationStatus();
   }, []);
 
   const startMicCapture = async () => {
@@ -137,6 +144,33 @@ function App() {
     setStatus('Stopped');
   };
 
+  const fetchIntegrationStatus = async () => {
+    try {
+      const res = await fetch(`${API_URL}/integrations/x`);
+      const data = await res.json();
+      setIntegrationStatus(data);
+      setSaveMessage(null);
+    } catch (err) {
+      console.warn('Failed to fetch integration status', err);
+    }
+  };
+
+  const startOAuth = async () => {
+    try {
+      const res = await fetch(`${API_URL}/integrations/x/oauth/start`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.auth_url) {
+        window.open(data.auth_url, '_blank');
+        // Poll status for a short period
+        setTimeout(fetchIntegrationStatus, 3000);
+        setTimeout(fetchIntegrationStatus, 8000);
+      }
+    } catch (err) {
+      setSaveMessage(`OAuth start failed: ${(err as any)?.message || 'unknown error'}`);
+    }
+  };
+
   return (
     <div className="container">
       <h1>🎧 Listening Buddy (Desktop)</h1>
@@ -154,6 +188,33 @@ function App() {
             Stop Listening
           </button>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <p className="card-title">Integrations</p>
+            <p className="card-subtitle">Connect X (Twitter) API keys for insights.</p>
+          </div>
+          <span className={`pill ${integrationStatus.connected ? 'pill-on' : 'pill-off'}`}>
+            {integrationStatus.connected ? 'Connected' : 'Not connected'}
+          </span>
+        </div>
+
+        {integrationStatus.user && (
+          <div className="card-subtitle">
+            Connected as: {integrationStatus.user?.data?.username || integrationStatus.user?.data?.name || 'Unknown'}
+          </div>
+        )}
+
+        <div className="actions">
+          <button className="link-button" onClick={startOAuth}>Connect with X OAuth</button>
+          {integrationStatus.updated_at && <span className="meta">Updated: {new Date(integrationStatus.updated_at).toLocaleString()}</span>}
+        </div>
+        <div className="debug-section">
+          <p>Redirect URI: http://localhost:8000/integrations/x/oauth/callback</p>
+        </div>
+        {saveMessage && <p className="status-text">{saveMessage}</p>}
       </div>
 
       <div className="debug-section">
