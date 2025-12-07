@@ -398,7 +398,7 @@ function App() {
     setVoiceQuestionQueue([]);
     setActiveSessionId(null);
     setIsConnected(false);
-    setStatus('Stopped');
+    setStatus('Ready');
     const latest = await fetchSessions();
     if (latest.length > 0 && !latest[0].title) {
       await generateTitle(latest[0].session_id);
