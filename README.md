@@ -1,23 +1,14 @@
-# Listening Buddy
+# Grok+1
 
-A "Listening Buddy" Chrome Extension that provides infinite context and proactive insights for your browsing sessions.
+Grok+1 is a voice-first companion that captures live audio, streams it to the backend for Grok Voice transcription, and layers in proactive insights so you can converse with podcasts, videos, or meetings in real time. It keeps infinite context, answers spoken questions (with optional spoken replies), and surfaces artifacts (tweets, links, summaries) based on the user's interests derived from X.
 
-## 🔑 Required APIs
-To run this project, you will need keys for the following services:
+## ✨ Capabilities
+- **Voice Agent Orbit**: Start or stop a capture session and watch the orb pulse while Grok+1 streams to the backend.
+- **Voice Question Mode**: Arm Grok, ask verbally, and hear synthesized answers alongside the text response.
+- **Session Timeline**: Browse past recordings, reopen them in a modal, and review live notes plus external artifacts.
+- **Ask Grok Search**: Query any recording for recap items or context using natural language.
+- **X Integration**: Connect Twitter to pull social context and artifacts into the insights panel.
 
-1.  **Grok Voice (xAI)**: For real-time transcription.
-    - [xAI API](https://x.ai/api)
-    - Required for: `backend/ingress_service`.
-2.  **Grok API (xAI)**: For the intelligence layer.
-    - Required for: `backend/rag_service`.
-3.  **X (Twitter) API**: For social context and proactive insights.
-    - Bearer Token is required.
-    - Required for: `backend/x_agent`.
-
-## 🏗 Project Structure
-- `/extension`: Chrome Extension (React + Tailwind + Vite).
-- `/backend`: Python FastAPI server + WebSocket handler.
-- `/vector_db`: Local ChromaDB data persistence.
 
 ## 🚀 Getting Started
 
@@ -30,10 +21,10 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-### Extension
+### Electron App
 ```bash
-cd extension
+cd electron-app
 npm install
-npm run build
-# Load 'dist' folder in chrome://extensions
+npm run dev
+# Electron launches after Vite serves http://localhost:5173
 ```
