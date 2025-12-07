@@ -81,6 +81,7 @@ function App() {
   const [voiceQuestionAnswer, setVoiceQuestionAnswer] = useState<{ question: string; answer: string } | null>(null);
   const [voiceQuestionInFlight, setVoiceQuestionInFlight] = useState(false);
   const [voiceQuestionError, setVoiceQuestionError] = useState<string | null>(null);
+  const [voiceQuestionQueue, setVoiceQuestionQueue] = useState<string[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -88,7 +89,6 @@ function App() {
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const voiceQuestionArmedRef = useRef(false);
-  const voiceQuestionInFlightRef = useRef(false);
   const activeSessionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -164,6 +164,18 @@ function App() {
     element.play().catch((err) => console.warn('Voice playback failed', err));
   };
 
+  const requestVoiceQuestionArm = async (sessionId: string, armed: boolean) => {
+    const res = await fetch(`${API_URL}/sessions/${sessionId}/questions/arm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ armed }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+  };
+
   const sendVoiceQuestion = async (sessionId: string, questionText: string) => {
     try {
       const res = await fetch(`${API_URL}/sessions/${sessionId}/questions`, {
@@ -191,32 +203,33 @@ function App() {
     if (!sessionId) {
       setVoiceQuestionError('Session not ready for questions.');
       setVoiceQuestionArmed(false);
+      setVoiceQuestionQueue([]);
       return;
     }
     const trimmed = (transcriptText || '').trim();
     if (!trimmed) return;
-    setVoiceQuestionArmed(false);
-    setVoiceQuestionPrompt(trimmed);
-    setVoiceQuestionAnswer(null);
-    setVoiceQuestionError(null);
-    setVoiceQuestionInFlight(true);
-    sendVoiceQuestion(sessionId, trimmed);
+    setVoiceQuestionQueue((prev) => [...prev, trimmed]);
   };
 
-  const toggleVoiceQuestion = () => {
-    if (voiceQuestionInFlight) return;
+  const toggleVoiceQuestion = async () => {
     if (!activeSessionId) {
       setVoiceQuestionError('Session not ready yet.');
       return;
     }
-    if (voiceQuestionArmed) {
-      setVoiceQuestionArmed(false);
-      setVoiceQuestionPrompt(null);
-      setVoiceQuestionError(null);
-    } else {
-      setVoiceQuestionArmed(true);
-      setVoiceQuestionPrompt(null);
-      setVoiceQuestionError(null);
+    const nextState = !voiceQuestionArmed;
+    setVoiceQuestionPrompt(null);
+    setVoiceQuestionError(null);
+    if (nextState) {
+      setVoiceQuestionAnswer(null);
+      setVoiceQuestionQueue([]);
+    }
+    setVoiceQuestionArmed(nextState);
+    try {
+      await requestVoiceQuestionArm(activeSessionId, nextState);
+    } catch (err: any) {
+      const message = err?.message || 'unknown error';
+      setVoiceQuestionError(`Failed to ${nextState ? 'enable' : 'disable'} voice question: ${message}`);
+      setVoiceQuestionArmed(!nextState);
     }
   };
 
@@ -232,7 +245,6 @@ function App() {
         const sessionForMessage: string | null = payload.session_id || activeSessionIdRef.current;
         if (
           voiceQuestionArmedRef.current &&
-          !voiceQuestionInFlightRef.current &&
           sessionForMessage &&
           (!activeSessionIdRef.current || sessionForMessage === activeSessionIdRef.current)
         ) {
@@ -248,13 +260,23 @@ function App() {
     voiceQuestionArmedRef.current = voiceQuestionArmed;
   }, [voiceQuestionArmed]);
 
-  useEffect(() => {
-    voiceQuestionInFlightRef.current = voiceQuestionInFlight;
-  }, [voiceQuestionInFlight]);
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if (voiceQuestionInFlight) return;
+    if (voiceQuestionQueue.length === 0) return;
+    const nextQuestion = voiceQuestionQueue[0];
+    setVoiceQuestionQueue((prev) => prev.slice(1));
+    setVoiceQuestionPrompt(nextQuestion);
+    setVoiceQuestionAnswer(null);
+    setVoiceQuestionError(null);
+    setVoiceQuestionInFlight(true);
+    sendVoiceQuestion(activeSessionId, nextQuestion);
+  }, [activeSessionId, voiceQuestionInFlight, voiceQuestionQueue]);
 
   useEffect(() => {
     return () => {
@@ -304,6 +326,7 @@ function App() {
     setVoiceQuestionAnswer(null);
     setVoiceQuestionError(null);
     setVoiceQuestionInFlight(false);
+    setVoiceQuestionQueue([]);
     setActiveSessionId(null);
     cleanupAudioPlayback();
 
@@ -350,6 +373,10 @@ function App() {
   };
 
   const stopCapture = async () => {
+    const sessionToClear = activeSessionIdRef.current;
+    if (sessionToClear) {
+      requestVoiceQuestionArm(sessionToClear, false).catch((err) => console.warn('Failed to clear voice question arm on stop', err));
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -368,6 +395,7 @@ function App() {
     setVoiceQuestionAnswer(null);
     setVoiceQuestionError(null);
     setVoiceQuestionInFlight(false);
+    setVoiceQuestionQueue([]);
     setActiveSessionId(null);
     setIsConnected(false);
     setStatus('Stopped');
@@ -531,6 +559,7 @@ function App() {
   };
 
   const combinedNotes = (insights ? [...insights].reverse() : []).flatMap((item) => (item.notes ? [...item.notes].reverse() : []));
+  const voiceQuestionBusy = voiceQuestionInFlight || voiceQuestionQueue.length > 0;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -538,17 +567,17 @@ function App() {
         <header className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center font-bold text-slate-900 shadow-glow">
-              LB
+              📣
             </div>
             <div>
-              <p className="text-lg font-semibold">Listening Buddy</p>
-              <p className="text-sm text-slate-400">Voice-first infinite context</p>
+              <p className="text-lg font-semibold">Grok +1</p>
+              <p className="text-sm text-slate-400">Your buddy that "really" listens ...</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className={integrationStatus.connected ? 'pill-on' : 'pill-off'}>
+            {/* <span className={integrationStatus.connected ? 'pill-on' : 'pill-off'}>
               {integrationStatus.connected ? 'X Connected' : 'X Not Connected'}
-            </span>
+            </span> */}
             <button
               onClick={startOAuth}
               className="rounded-full border border-blue-400/50 px-4 py-2 text-sm font-semibold text-blue-200 hover:bg-blue-500/10 transition"
@@ -565,7 +594,7 @@ function App() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm uppercase tracking-[0.2em] text-slate-400">Voice Agent</p>
-                  <p className="text-2xl font-semibold">Speak and listen with infinite memory</p>
+                  <p className="text-2xl font-semibold">Starting your listen-along session</p>
                 </div>
                 <span className={`px-3 py-1 rounded-full text-xs font-semibold ${isConnected ? 'bg-emerald-500/15 text-emerald-200' : 'bg-slate-800 text-slate-300'}`}>
                   {isConnected ? 'Live' : 'Idle'}
@@ -575,7 +604,7 @@ function App() {
               <div className="flex flex-col items-center gap-4 py-6">
                 <div className="relative h-48 w-48 flex items-center justify-center rounded-full voice-orb glow border border-blue-400/20">
                   <div className={`h-32 w-32 rounded-full bg-slate-900/70 border border-blue-400/40 flex items-center justify-center ${isConnected ? 'animate-pulse' : ''}`}>
-                    <span className="text-lg font-semibold">{isConnected ? 'Listening…' : 'Tap to speak'}</span>
+                    {isConnected ? <span className="text-lg font-semibold">Listening…</span> : <span className="text-5xl leading-none">👇</span>}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 text-slate-300">
@@ -604,26 +633,32 @@ function App() {
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Voice Question</p>
-                        <p className="text-sm font-semibold text-slate-100">Ask about this transcript</p>
+                        <p className="text-sm font-semibold text-slate-100">Have doubts about what you're listening to?</p>
                       </div>
                       <span
                         className={`text-xs font-semibold px-3 py-1 rounded-full ${
-                          voiceQuestionInFlight ? 'bg-blue-500/20 text-blue-100' : voiceQuestionArmed ? 'bg-emerald-500/20 text-emerald-100' : 'bg-slate-800 text-slate-300'
+                          voiceQuestionBusy ? 'bg-blue-500/20 text-blue-100' : voiceQuestionArmed ? 'bg-emerald-500/20 text-emerald-100' : 'bg-slate-800 text-slate-300'
                         }`}
                       >
-                        {voiceQuestionInFlight ? 'Answering' : voiceQuestionArmed ? 'Listening' : 'Idle'}
+                        {voiceQuestionBusy ? 'Answering' : voiceQuestionArmed ? 'Question mode' : 'Idle'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-400">
-                      Enable this mode and ask your question aloud. The next final transcript chunk will be routed through /questions and answered with speech.
+                      Have a multi-turn conversation with Grok about what you're listening to. Pause what you're listening and fire away! 
                     </p>
                     <button
                       onClick={toggleVoiceQuestion}
-                      disabled={!activeSessionId || voiceQuestionInFlight}
+                      disabled={!activeSessionId}
                       className="rounded-2xl bg-gradient-to-r from-blue-500 to-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {voiceQuestionInFlight ? 'Answering…' : voiceQuestionArmed ? 'Listening for your question…' : 'Ask about transcript'}
+                      {voiceQuestionArmed ? 'Done, asking?' : 'Ask Grok'}
                     </button>
+                    {voiceQuestionBusy && (
+                      <p className="text-xs text-blue-200 flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+                        Generating a spoken response…
+                      </p>
+                    )}
                     {voiceQuestionPrompt && (
                       <p className="text-xs text-slate-300">
                         <span className="font-semibold text-slate-100">You asked:</span> {voiceQuestionPrompt}
@@ -640,7 +675,7 @@ function App() {
                 )}
               </div>
 
-              <div className="glass rounded-2xl p-4">
+              {/* <div className="glass rounded-2xl p-4">
                 <div className="flex items-center justify-between text-sm text-slate-300">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full bg-emerald-400" />
@@ -651,7 +686,7 @@ function App() {
                     {integrationStatus.updated_at && <span>Last X sync: {new Date(integrationStatus.updated_at).toLocaleString()}</span>}
                   </div>
                 </div>
-              </div>
+              </div> */}
             </div>
           </div>
 
@@ -669,10 +704,10 @@ function App() {
               {saveMessage && <p className="text-sm text-slate-300 mt-2">{saveMessage}</p>}
               {integrationStatus.user && (
                 <p className="text-sm text-slate-400 mt-2">
-                  Connected as {integrationStatus.user?.data?.username || integrationStatus.user?.data?.name || 'Unknown'}
+                  Logged in as {integrationStatus.user?.data?.username || integrationStatus.user?.data?.name || 'Unknown'}
                 </p>
               )}
-              <p className="text-xs text-slate-500 mt-2">Redirect URI: http://localhost:8000/integrations/x/oauth/callback</p>
+              {/* <p className="text-xs text-slate-500 mt-2">Redirect URI: http://localhost:8000/integrations/x/oauth/callback</p> */}
             </div>
 
             <div className="glass rounded-2xl p-4">

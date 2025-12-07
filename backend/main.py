@@ -8,7 +8,7 @@ import secrets
 import httpx
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set
 
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
@@ -58,6 +58,7 @@ X_TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "AAAAAAAAAAAAAAAAAAAAAAl25wEAAAAAZmG8VeUkzc69eSkI7Y%2FL2cUh58I%3DVmeNqXMh5yX5Xp3bZDKdLoixbLcTIZdFW8ASJZTjAGb7QvGvg0")
 TTS_VOICE = os.getenv("TTS_VOICE", "Ara")
 TTS_FORMAT = os.getenv("TTS_FORMAT", "mp3")
+VOICE_QUESTION_SUPPRESSIONS: Set[str] = set()
 
 
 class XIntegrationConfig(BaseModel):
@@ -72,6 +73,10 @@ class XIntegrationConfig(BaseModel):
 
 class SessionQuestion(BaseModel):
     question: str = Field(..., min_length=1)
+
+
+class VoiceQuestionArmRequest(BaseModel):
+    armed: bool = Field(..., description="Whether to route the next transcript chunk as a voice question")
 
 
 def integration_path(name: str) -> Path:
@@ -627,6 +632,20 @@ async def ask_realtime_question(session_id: str, payload: SessionQuestion):
     }
 
 
+@app.post("/sessions/{session_id}/questions/arm")
+async def arm_voice_question_mode(session_id: str, payload: VoiceQuestionArmRequest):
+    meta_file = session_meta_path(session_id)
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if payload.armed:
+        VOICE_QUESTION_SUPPRESSIONS.add(session_id)
+    else:
+        VOICE_QUESTION_SUPPRESSIONS.discard(session_id)
+
+    return {"armed": payload.armed}
+
+
 @app.websocket("/ws/insights/{session_id}")
 async def insights_websocket(ws: WebSocket, session_id: str):
     await ws.accept()
@@ -892,8 +911,6 @@ async def audio_websocket(client_ws: WebSocket):
                                     normalized_transcript = transcript.strip()
                                     # Append final text to single transcript file
                                     if normalized_transcript:
-                                        with transcript_path.open("a", encoding="utf-8") as f:
-                                            f.write(normalized_transcript + "\n")
                                         try:
                                             await client_ws.send_text(
                                                 json.dumps(
@@ -908,13 +925,22 @@ async def audio_websocket(client_ws: WebSocket):
                                             print("Client disconnected while sending transcript")
                                         except Exception as exc:
                                             print(f"Failed to forward transcript to client: {exc}")
-                                    chunk_counter += 1
-                                    session_meta["chunks"] = chunk_counter
-                                    # update duration/end_time on each final so UI sees progress
-                                    now = datetime.utcnow()
-                                    session_meta["end_time"] = now.isoformat()
-                                    session_meta["duration_seconds"] = max((now - session_start).total_seconds(), 0)
-                                    write_session_meta(session_id, session_meta)
+
+                                        suppress_transcript = session_id in VOICE_QUESTION_SUPPRESSIONS
+
+                                        if suppress_transcript:
+                                            print("Skipping transcript append for voice question chunk")
+                                        else:
+                                            with transcript_path.open("a", encoding="utf-8") as f:
+                                                f.write(normalized_transcript + "\n")
+                                            chunk_counter += 1
+                                            session_meta["chunks"] = chunk_counter
+
+                                        # update duration/end_time on each final so UI sees progress
+                                        now = datetime.utcnow()
+                                        session_meta["end_time"] = now.isoformat()
+                                        session_meta["duration_seconds"] = max((now - session_start).total_seconds(), 0)
+                                        write_session_meta(session_id, session_meta)
                                 # else:
                                 #     print(f"💭 Interim: {transcript}")
                                 
@@ -936,4 +962,5 @@ async def audio_websocket(client_ws: WebSocket):
             session_meta["duration_seconds"] = duration
             session_meta["status"] = "completed"
             write_session_meta(session_id, session_meta)
+        VOICE_QUESTION_SUPPRESSIONS.discard(session_id)
         print(f"Session closed: {session_id}")
