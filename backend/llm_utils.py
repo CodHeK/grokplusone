@@ -112,6 +112,58 @@ async def generate_insights_from_transcript(
         return {"notes": notes, "artifacts": [], "raw": data}
 
 
+async def generate_artifact_search_query(
+    transcript_excerpt: str,
+    user_interests: str = "",
+    model: str = "grok-3-mini",
+) -> str:
+    api_key = os.getenv("XAI_API_KEY")
+    base_url = os.getenv("BASE_URL", "https://api.x.ai/v1")
+    if not api_key:
+        raise ValueError("Missing XAI_API_KEY")
+
+    excerpt = transcript_excerpt[-1000:] if transcript_excerpt and len(transcript_excerpt) > 1000 else transcript_excerpt
+    prompt = (
+        "You craft focused natural language search queries for X (Twitter) search.\n"
+        "Given the latest portion of a transcript and optional user interests, propose a short query (few words) that best represents the topic the user would want to explore on X.\n"
+        "Do not mention the words 'query' or 'search'; just output the keyword phrase itself, avoiding quotes and hashtags.\n"
+        "Return JSON: {\"query\": \"...\"}.\n"
+        f"Transcript excerpt (last 1000 chars):\n{excerpt}"
+    )
+    url = f"{base_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Return only valid JSON with a query field."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        parsed = {}
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1:
+                parsed = json.loads(content[start : end + 1])
+            else:
+                raise
+        query = parsed.get("query", "").strip()
+        if not query:
+            raise ValueError("Query missing in response")
+        return query
+
+
 async def summarize_user_interest_theme(likes: List[Dict[str, Any]], model: str = "grok-3-mini") -> str:
     api_key = os.getenv("XAI_API_KEY")
     base_url = os.getenv("BASE_URL", "https://api.x.ai/v1")

@@ -7,7 +7,7 @@ import hashlib
 import secrets
 import httpx
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 import websockets
@@ -20,6 +20,7 @@ from llm_utils import (
     generate_title_from_transcript,
     generate_insights_from_transcript,
     summarize_user_interest_theme,
+    generate_artifact_search_query,
 )
 
 load_dotenv()
@@ -52,6 +53,7 @@ X_REDIRECT_URI = os.getenv("X_REDIRECT_URI", "http://localhost:8000/integrations
 X_OAUTH_SCOPES = os.getenv("X_OAUTH_SCOPES", "tweet.read users.read follows.read like.read offline.access")
 X_AUTH_URL = "https://twitter.com/i/oauth2/authorize"
 X_TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
+X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "AAAAAAAAAAAAAAAAAAAAAAl25wEAAAAAZmG8VeUkzc69eSkI7Y%2FL2cUh58I%3DVmeNqXMh5yX5Xp3bZDKdLoixbLcTIZdFW8ASJZTjAGb7QvGvg0")
 
 
 class XIntegrationConfig(BaseModel):
@@ -82,6 +84,28 @@ def save_integration(name: str, data: Dict[str, Any]) -> None:
     path = integration_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2))
+
+
+def parse_iso8601(dt_str: Optional[str]) -> Optional[datetime]:
+    if not dt_str:
+        return None
+    try:
+        value = dt_str
+        if value.endswith("Z"):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            dt = datetime.fromisoformat(value)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
+def format_utc_iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_user_interests() -> Dict[str, Any]:
@@ -126,6 +150,31 @@ async def fetch_x_liked_tweets(user_id: str, access_token: str, max_results: int
             return data.get("data", []) or []
     except Exception:
         return []
+
+
+async def search_x_tweets(query: str, start_time: Optional[str], end_time: Optional[str], max_results: int = 10) -> list:
+    if not X_BEARER_TOKEN:
+        raise HTTPException(status_code=500, detail="X_BEARER_TOKEN not configured")
+    params = {
+        "query": query,
+        "max_results": max(10, min(max_results, 100)),
+    }
+    if start_time:
+        params["start_time"] = start_time
+    if end_time:
+        params["end_time"] = end_time
+    headers = {"Authorization": f"Bearer {X_BEARER_TOKEN}"}
+    url = "https://api.x.com/2/tweets/search/all"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("data", []) or []
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Artifact search failed: {e}")
 
 
 def summarize_likes_text(likes: list, max_items: int = 5, max_len: int = 200) -> str:
@@ -401,6 +450,58 @@ async def get_session_insights(session_id: str):
         raise HTTPException(status_code=500, detail=f"Insights generation failed: {e}")
 
 
+async def build_session_artifacts_response(session_id: str) -> Dict[str, Any]:
+    meta_file = session_meta_path(session_id)
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        meta = json.loads(meta_file.read_text())
+    except Exception:
+        meta = {}
+
+    transcript = read_session_text(session_id, max_chars=4000)
+    if not transcript:
+        raise HTTPException(status_code=400, detail="No transcript found for this session")
+
+    excerpt = transcript[-1000:] if len(transcript) > 1000 else transcript
+    user_interests_text = get_user_interests_text()
+
+    try:
+        query = await generate_artifact_search_query(excerpt, user_interests=user_interests_text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate artifact query: {e}")
+
+    now_utc = datetime.now(timezone.utc)
+    end_date = now_utc.date()
+    start_date = (now_utc - timedelta(days=2)).date()
+
+    start_iso = str(start_date) + "T00:00:00Z"
+    end_iso = str(end_date) + "T00:00:00Z"
+
+    tweets = await search_x_tweets(query, start_iso, end_iso, max_results=10)
+    artifacts = []
+    for item in tweets:
+        tweet_id = item.get("id")
+        text = (item.get("text") or "").strip()
+        if not tweet_id or not text:
+            continue
+        artifacts.append(
+            {
+                "title": text[:140],
+                "url": f"https://x.com/i/web/status/{tweet_id}",
+                "tweet": item,
+            }
+        )
+
+    return {"query": query, "artifacts": artifacts}
+
+
+@app.get("/sessions/{session_id}/artifacts")
+async def get_session_artifacts(session_id: str):
+    return await build_session_artifacts_response(session_id)
+
+
 @app.websocket("/ws/insights/{session_id}")
 async def insights_websocket(ws: WebSocket, session_id: str):
     await ws.accept()
@@ -415,6 +516,14 @@ async def insights_websocket(ws: WebSocket, session_id: str):
     # Send cached insights immediately
     cached = load_insights(session_id)
     await ws.send_text(json.dumps({"type": "insights_init", "insights": cached}))
+
+    try:
+        artifacts_payload = await build_session_artifacts_response(session_id)
+        await ws.send_text(json.dumps({"type": "artifacts_init", **artifacts_payload}))
+    except HTTPException as e:
+        await ws.send_text(json.dumps({"type": "artifacts_error", "message": e.detail}))
+    except Exception as e:
+        await ws.send_text(json.dumps({"type": "artifacts_error", "message": str(e)}))
 
     last_len = 0
     try:
@@ -442,6 +551,14 @@ async def insights_websocket(ws: WebSocket, session_id: str):
             }
             append_insights(session_id, payload)
             await ws.send_text(json.dumps({"type": "insights", "data": payload}))
+
+            try:
+                artifacts_payload = await build_session_artifacts_response(session_id)
+                await ws.send_text(json.dumps({"type": "artifacts", "data": artifacts_payload}))
+            except HTTPException as e:
+                await ws.send_text(json.dumps({"type": "artifacts_error", "message": e.detail}))
+            except Exception as e:
+                await ws.send_text(json.dumps({"type": "artifacts_error", "message": str(e)}))
     except WebSocketDisconnect:
         print(f"Insights subscriber disconnected for session {session_id}")
     except Exception as e:

@@ -20,6 +20,12 @@ type InsightPayload = {
   artifacts?: { title: string; url: string }[];
 };
 
+type ArtifactItem = {
+  title: string;
+  url: string;
+  tweet?: any;
+};
+
 // Convert Float32 audio to 16-bit PCM
 function convertFloat32ToInt16(float32Array: Float32Array): Int16Array {
   const int16Array = new Int16Array(float32Array.length);
@@ -66,6 +72,8 @@ function App() {
   const [searching, setSearching] = useState(false);
   const [insights, setInsights] = useState<InsightPayload[] | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
+  const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -85,7 +93,9 @@ function App() {
   useEffect(() => {
     if (selectedSession) {
       setInsights([]);
+      setArtifacts([]);
       fetchInsights(selectedSession.session_id);
+      fetchArtifacts(selectedSession.session_id);
       connectInsightsWs(selectedSession.session_id);
     }
     return () => {
@@ -257,21 +267,25 @@ function App() {
       const ws = new WebSocket(wsUrl);
       insightsWsRef.current = ws;
 
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type === 'insights_init' && payload.insights) {
-            setInsights(payload.insights);
-          } else if (payload.type === 'insights' && payload.data) {
-            setInsights((prev) => {
-              const next = prev ? [...prev, payload.data] : [payload.data];
-              return next;
-            });
-          }
-        } catch (e) {
-          console.warn('Failed to parse insights ws message', e);
-        }
-      };
+          ws.onmessage = (event) => {
+            try {
+              const payload = JSON.parse(event.data);
+              if (payload.type === 'insights_init' && payload.insights) {
+                setInsights(payload.insights);
+              } else if (payload.type === 'insights' && payload.data) {
+                setInsights((prev) => {
+                  const next = prev ? [...prev, payload.data] : [payload.data];
+                  return next;
+                });
+              } else if (payload.type === 'artifacts_init') {
+                setArtifacts(payload.artifacts || []);
+              } else if (payload.type === 'artifacts' && payload.data) {
+                setArtifacts(payload.data.artifacts || []);
+              }
+            } catch (e) {
+              console.warn('Failed to parse insights ws message', e);
+            }
+          };
 
       ws.onclose = () => {
         insightsWsRef.current = null;
@@ -297,6 +311,21 @@ function App() {
       setInsights([]);
     } finally {
       setInsightsLoading(false);
+    }
+  };
+
+  const fetchArtifacts = async (sessionId: string) => {
+    setArtifactsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/sessions/${sessionId}/artifacts`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setArtifacts(data.artifacts || []);
+    } catch (err) {
+      console.warn('Failed to fetch artifacts', err);
+      setArtifacts([]);
+    } finally {
+      setArtifactsLoading(false);
     }
   };
 
@@ -515,9 +544,9 @@ function App() {
                         )}
                       </div>
                       <div className="flex flex-col gap-2">
-                        {insights
-                          .flatMap((item) => item.artifacts || [])
-                          .map((art, idx) => (
+                        {artifactsLoading && <p className="text-sm text-slate-400">Loading artifacts…</p>}
+                        {!artifactsLoading &&
+                          artifacts.map((art, idx) => (
                             <a
                               key={idx}
                               className="rounded-xl border border-white/10 bg-slate-900/70 p-3 flex flex-col gap-1 hover:border-blue-400/40 transition"
@@ -529,9 +558,7 @@ function App() {
                               <p className="text-xs text-slate-500 break-all">{art.url}</p>
                             </a>
                           ))}
-                        {insights.flatMap((i) => i.artifacts || []).length === 0 && (
-                          <p className="text-sm text-slate-400">No artifacts yet.</p>
-                        )}
+                        {!artifactsLoading && artifacts.length === 0 && <p className="text-sm text-slate-400">No artifacts yet.</p>}
                       </div>
                     </div>
                   )}
