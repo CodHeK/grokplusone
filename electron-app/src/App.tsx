@@ -97,7 +97,7 @@ function App() {
       setInsights([]);
       setArtifacts([]);
       fetchInsights(selectedSession.session_id);
-      fetchArtifacts(selectedSession.session_id);
+      // fetchArtifacts(selectedSession.session_id);
       connectInsightsWs(selectedSession.session_id);
     }
     return () => {
