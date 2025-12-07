@@ -4,6 +4,7 @@ import './style.css';
 const WS_URL = 'ws://localhost:8000/ws/audio';
 const API_URL = 'http://localhost:8000';
 const TARGET_SAMPLE_RATE = 16000;
+const DEMO_AUDIO_FILENAME = 'demo.mp3';
 
 type SessionSummary = {
   session_id: string;
@@ -61,6 +62,8 @@ function downsampleBuffer(buffer: Float32Array, sampleRate: number, outSampleRat
   return result;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function App() {
   const [status, setStatus] = useState('Ready to listen');
   const [isConnected, setIsConnected] = useState(false);
@@ -77,12 +80,15 @@ function App() {
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [voiceQuestionArmed, setVoiceQuestionArmed] = useState(false);
+  const [voicePanelVisible, setVoicePanelVisible] = useState(false);
   const [voiceQuestionPrompt, setVoiceQuestionPrompt] = useState<string | null>(null);
   const [voiceQuestionAnswer, setVoiceQuestionAnswer] = useState<{ question: string; answer: string } | null>(null);
   const [voiceQuestionInFlight, setVoiceQuestionInFlight] = useState(false);
   const [voiceQuestionError, setVoiceQuestionError] = useState<string | null>(null);
   const [voiceQuestionQueue, setVoiceQuestionQueue] = useState<string[]>([]);
+  const [liveTranscriptText, setLiveTranscriptText] = useState('');
   const streamRef = useRef<MediaStream | null>(null);
+  const liveTranscriptRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const insightsWsRef = useRef<WebSocket | null>(null);
@@ -90,6 +96,9 @@ function App() {
   const audioUrlRef = useRef<string | null>(null);
   const voiceQuestionArmedRef = useRef(false);
   const activeSessionIdRef = useRef<string | null>(null);
+  const fileStreamAbortRef = useRef(false);
+  const fileStreamCompletedRef = useRef(false);
+  const cleanupInProgressRef = useRef(false);
 
   useEffect(() => {
     return () => stopCapture();
@@ -101,6 +110,14 @@ function App() {
     fetchSessions();
     ensureUserInterests();
   }, []);
+
+  useEffect(() => {
+    if (!liveTranscriptRef.current) return;
+    liveTranscriptRef.current.scrollTo({
+      top: liveTranscriptRef.current.scrollHeight,
+      behavior: 'smooth',
+    });
+  }, [liveTranscriptText]);
 
   useEffect(() => {
     if (!selectedSession) {
@@ -239,9 +256,18 @@ function App() {
       const payload = JSON.parse(event.data);
       if (payload.type === 'session_started' && payload.session_id) {
         setActiveSessionId(payload.session_id);
+        setLiveTranscriptText('');
+        setVoicePanelVisible(true);
         return;
       }
       if (payload.type === 'transcript_final' && typeof payload.text === 'string') {
+        const normalized = payload.text.trim();
+        if (normalized) {
+          setLiveTranscriptText((prev) => {
+            const next = prev ? `${prev} ${normalized}` : normalized;
+            return next.length > 4000 ? next.slice(-4000) : next;
+          });
+        }
         const sessionForMessage: string | null = payload.session_id || activeSessionIdRef.current;
         if (
           voiceQuestionArmedRef.current &&
@@ -319,8 +345,11 @@ function App() {
     }
   };
 
-  const connectStream = (stream: MediaStream) => {
+  const beginAudioSession = (startStreaming: () => void | Promise<void>, statusText: string, stream: MediaStream | null) => {
     streamRef.current = stream;
+    fileStreamAbortRef.current = false;
+    fileStreamCompletedRef.current = false;
+    setLiveTranscriptText('');
     setVoiceQuestionArmed(false);
     setVoiceQuestionPrompt(null);
     setVoiceQuestionAnswer(null);
@@ -335,22 +364,32 @@ function App() {
 
     ws.onopen = () => {
       setIsConnected(true);
-      setStatus('Streaming microphone audio to backend...');
-      processAudio(stream);
+      setStatus(statusText);
+      Promise.resolve(startStreaming()).catch((err) => {
+        console.error('Streaming failed', err);
+        setStatus('Streaming failed');
+        stopCapture();
+      });
     };
 
     ws.onmessage = handleAudioServerMessage;
 
     ws.onclose = () => {
       setIsConnected(false);
-      setStatus('Disconnected');
-      stopCapture();
+      if (!cleanupInProgressRef.current) {
+        setStatus('Disconnected');
+        stopCapture();
+      }
     };
 
     ws.onerror = (err) => {
       console.error('WS Error', err);
       setStatus('Connection Error');
     };
+  };
+
+  const connectStream = (stream: MediaStream) => {
+    beginAudioSession(() => processAudio(stream), 'Streaming microphone audio to backend...', stream);
   };
 
   const processAudio = (stream: MediaStream) => {
@@ -372,7 +411,62 @@ function App() {
     };
   };
 
+  const fetchDemoAudioBuffer = async (): Promise<AudioBuffer> => {
+    const res = await fetch(`${API_URL}/demo-audio?file_name=${encodeURIComponent(DEMO_AUDIO_FILENAME)}`);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    const decodeContext = new AudioContext();
+    const audioBuffer = await decodeContext.decodeAudioData(arrayBuffer);
+    await decodeContext.close();
+    return audioBuffer;
+  };
+
+  const streamAudioBuffer = async (audioBuffer: AudioBuffer) => {
+    fileStreamAbortRef.current = false;
+    fileStreamCompletedRef.current = false;
+    const channelData = audioBuffer.numberOfChannels > 0 ? audioBuffer.getChannelData(0) : new Float32Array(audioBuffer.length);
+    const downsampled = downsampleBuffer(channelData, audioBuffer.sampleRate, TARGET_SAMPLE_RATE);
+    const chunkSamples = TARGET_SAMPLE_RATE / 5;
+    let offset = 0;
+    while (offset < downsampled.length) {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || fileStreamAbortRef.current) {
+        break;
+      }
+      const end = Math.min(offset + chunkSamples, downsampled.length);
+      const chunk = downsampled.subarray(offset, end);
+      const pcm16 = convertFloat32ToInt16(chunk);
+      wsRef.current.send(pcm16.buffer);
+      const durationMs = (chunk.length / TARGET_SAMPLE_RATE) * 1000;
+      await sleep(durationMs);
+      offset = end;
+    }
+    fileStreamCompletedRef.current = !fileStreamAbortRef.current;
+    if (!fileStreamAbortRef.current) {
+      setStatus('Demo playback complete');
+      await stopCapture();
+    }
+  };
+
+  const startDemoPlayback = async () => {
+    if (isConnected) return;
+    try {
+      setStatus(`Loading ${DEMO_AUDIO_FILENAME}...`);
+      const audioBuffer = await fetchDemoAudioBuffer();
+      beginAudioSession(() => streamAudioBuffer(audioBuffer), `Streaming ${DEMO_AUDIO_FILENAME}...`, null);
+      setTimeout(fetchSessions, 500);
+    } catch (err: any) {
+      console.error('Demo playback failed', err);
+      setStatus(`Demo load failed: ${err?.message || 'unknown error'}`);
+    }
+  };
+
   const stopCapture = async () => {
+    if (cleanupInProgressRef.current) return;
+    cleanupInProgressRef.current = true;
+    fileStreamAbortRef.current = true;
     const sessionToClear = activeSessionIdRef.current;
     if (sessionToClear) {
       requestVoiceQuestionArm(sessionToClear, false).catch((err) => console.warn('Failed to clear voice question arm on stop', err));
@@ -398,11 +492,19 @@ function App() {
     setVoiceQuestionQueue([]);
     setActiveSessionId(null);
     setIsConnected(false);
-    setStatus('Ready');
-    const latest = await fetchSessions();
-    if (latest.length > 0 && !latest[0].title) {
-      await generateTitle(latest[0].session_id);
-      await fetchSessions();
+    setLiveTranscriptText('');
+    if (!fileStreamCompletedRef.current) {
+      setStatus('Ready');
+    }
+    try {
+      const latest = await fetchSessions();
+      if (latest.length > 0 && !latest[0].title) {
+        await generateTitle(latest[0].session_id);
+        await fetchSessions();
+      }
+    } finally {
+      cleanupInProgressRef.current = false;
+      fileStreamCompletedRef.current = false;
     }
   };
 
@@ -611,14 +713,22 @@ function App() {
                   <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
                   <p className="text-sm">{status}</p>
                 </div>
-                <div className="flex gap-3">
+                <div className="flex flex-wrap gap-3">
                   {!isConnected ? (
-                    <button
-                      onClick={startMicCapture}
-                      className="rounded-full bg-gradient-to-r from-blue-500 to-cyan-400 px-6 py-3 text-slate-950 font-semibold shadow-glow transition hover:scale-105"
-                    >
-                      Start Recording
-                    </button>
+                    <>
+                      <button
+                        onClick={startMicCapture}
+                        className="rounded-full bg-gradient-to-r from-blue-500 to-cyan-400 px-6 py-3 text-slate-950 font-semibold shadow-glow transition hover:scale-105"
+                      >
+                        Start Recording
+                      </button>
+                      <button
+                        onClick={startDemoPlayback}
+                        className="rounded-full border border-blue-400/50 px-6 py-3 text-blue-100 font-semibold hover:bg-blue-500/10 transition"
+                      >
+                        Play Demo MP3
+                      </button>
+                    </>
                   ) : (
                     <button
                       onClick={stopCapture}
@@ -628,7 +738,15 @@ function App() {
                     </button>
                   )}
                 </div>
-                {isConnected && (
+                {liveTranscriptText && (
+                  <div className="w-full rounded-2xl border border-white/10 bg-slate-900/60 p-3 flex flex-col gap-2">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Live transcript</p>
+                    <div ref={liveTranscriptRef} className="flex flex-col gap-2 max-h-32 overflow-y-auto pr-1">
+                      <p className="text-sm text-slate-100 whitespace-pre-line break-words">{liveTranscriptText}</p>
+                    </div>
+                  </div>
+                )}
+                {voicePanelVisible && (
                   <div className="w-full rounded-2xl border border-white/10 bg-slate-900/70 p-4 flex flex-col gap-3">
                     <div className="flex items-center justify-between">
                       <div>

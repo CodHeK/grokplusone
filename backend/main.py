@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, Set
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from llm_utils import (
@@ -42,6 +42,7 @@ GROK_API_KEY = os.getenv("XAI_API_KEY")
 BASE_URL = os.getenv("BASE_URL", "https://api.x.ai/v1")
 WS_URL = BASE_URL.replace("https://", "wss://").replace("http://", "ws://") + "/realtime/audio/transcriptions"
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", "storage"))
+DEMO_AUDIO_FILE = os.getenv("DEMO_AUDIO_FILE", "demo.mp3")
 # Target ~20–30 seconds per chunk for long-form; adjust via env if needed
 CHUNK_CHAR_TARGET = int(os.getenv("CHUNK_CHAR_TARGET", "20"))
 CHUNK_FLUSH_SECONDS = int(os.getenv("CHUNK_FLUSH_SECONDS", "20"))
@@ -119,6 +120,14 @@ def parse_iso8601(dt_str: Optional[str]) -> Optional[datetime]:
 
 def format_utc_iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def resolve_storage_path(relative_name: str) -> Path:
+    candidate = (STORAGE_ROOT / relative_name).resolve()
+    root = STORAGE_ROOT.resolve()
+    if not str(candidate).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+    return candidate
 
 
 def load_user_interests() -> Dict[str, Any]:
@@ -378,6 +387,17 @@ async def generate_user_interests(force: bool = Query(default=False)):
     return {**payload, "cached": False}
 
 
+@app.get("/demo-audio")
+async def get_demo_audio(file_name: Optional[str] = Query(default=None, description="Relative path within storage directory")):
+    target_name = file_name or DEMO_AUDIO_FILE
+    if not target_name:
+        raise HTTPException(status_code=400, detail="No demo audio configured")
+    target_path = resolve_storage_path(target_name)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Demo audio not found")
+    return FileResponse(target_path, media_type="audio/mpeg", filename=target_path.name)
+
+
 @app.get("/sessions")
 async def list_sessions():
     sessions = []
@@ -537,7 +557,7 @@ async def build_session_artifacts_response(
 
     tweets = await search_x_tweets(query, start_iso, end_iso, max_results=10)
     artifacts = []
-    for item in tweets:
+    for item in tweets[:3]:
         tweet_id = item.get("id")
         text = (item.get("text") or "").strip()
         if not tweet_id or not text:
