@@ -56,12 +56,12 @@ async def generate_title_from_transcript(transcript: str, model: str = "grok-4-1
 
 async def generate_insights_from_transcript(
     transcript: str,
-    model: str = "grok-4-1-fast-reasoning",
+    model: str = "grok-3-mini",
     user_interests: str = "",
 ) -> Dict[str, Any]:
     """
-    Generate notes, queries, and entities from a transcript and optional user interests.
-    Returns a dict with notes, queries, entities.
+    Generate notes and artifacts (posts with title/url) from a transcript and optional user interests.
+    Returns a dict with notes, artifacts.
     """
     api_key = os.getenv("XAI_API_KEY")
     base_url = os.getenv("BASE_URL", "https://api.x.ai/v1")
@@ -76,17 +76,16 @@ async def generate_insights_from_transcript(
     prompt = (
         "You act as a live note taker and X discovery assistant.\n"
         "Given transcript excerpts and user interest signals, produce:\n"
-        "- notes: 3-5 concise bullet phrases of key points.\n"
-        "- queries: 2-3 short search strings for X (no hashtags, no quotes).\n"
-        "- entities: up to 3 user handles or names relevant to the content.\n"
-        "Return JSON: {\"notes\": [..], \"queries\": [..], \"entities\": [..]}.\n"
+        "- notes: 1-2 concise bullet phrases of key points relevant from transcripts based on the user's interest. \n"
+        "- artifacts: up to 2 objects with fields title (short headline) and url (X post link if possible; otherwise a suggested search link).\n"
+        "Return JSON: {\"notes\": [..], \"artifacts\": [{\"title\": \"...\", \"url\": \"...\"}, ...]}.\n"
         f"User interests: {user_interests or 'not provided'}\n"
         f"Transcript excerpt:\n{transcript[:6000]}"
     )
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "Return only valid JSON with fields notes, queries, entities."},
+            {"role": "system", "content": "Return only valid JSON with fields notes and artifacts (each artifact has title and url)."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.4,
@@ -107,8 +106,14 @@ async def generate_insights_from_transcript(
             else:
                 raise
         notes = parsed.get("notes") or []
-        queries = parsed.get("queries") or []
-        entities = parsed.get("entities") or []
-        if not isinstance(notes, list) or not isinstance(queries, list) or not isinstance(entities, list):
+        artifacts = parsed.get("artifacts") or []
+        if not isinstance(notes, list) or not isinstance(artifacts, list):
             raise ValueError("Malformed insights response")
-        return {"notes": notes, "queries": queries, "entities": entities, "raw": data}
+        norm_artifacts = []
+        for a in artifacts:
+            if isinstance(a, dict):
+                title = a.get("title")
+                url = a.get("url")
+                if title and url:
+                    norm_artifacts.append({"title": title, "url": url})
+        return {"notes": notes, "artifacts": norm_artifacts, "raw": data}

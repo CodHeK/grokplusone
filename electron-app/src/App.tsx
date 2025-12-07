@@ -17,8 +17,7 @@ type SessionSummary = {
 type InsightPayload = {
   timestamp?: string;
   notes: string[];
-  queries: string[];
-  entities: string[];
+  artifacts?: { title: string; url: string }[];
 };
 
 // Convert Float32 audio to 16-bit PCM
@@ -84,6 +83,7 @@ function App() {
 
   useEffect(() => {
     if (selectedSession) {
+      setInsights([]);
       fetchInsights(selectedSession.session_id);
       connectInsightsWs(selectedSession.session_id);
     }
@@ -285,7 +285,7 @@ function App() {
       setInsights(list);
     } catch (err) {
       console.warn('Failed to fetch insights', err);
-      setInsights(null);
+      setInsights([]);
     } finally {
       setInsightsLoading(false);
     }
@@ -313,6 +313,8 @@ function App() {
       .padStart(2, '0');
     return `${mins}:${secs}`;
   };
+
+  const combinedNotes = (insights ? [...insights].reverse() : []).flatMap((item) => (item.notes ? [...item.notes].reverse() : []));
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -474,72 +476,54 @@ function App() {
                 </button>
               </div>
 
-              <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="mt-6 grid grid-cols-1 gap-4">
                 <div className="rounded-2xl border border-white/5 bg-white/5 p-4">
                   <div className="flex items-center justify-between mb-2">
-                    <p className="text-sm uppercase tracking-[0.15em] text-slate-400">X artifacts</p>
-                    <span className="pill-on">Live link</span>
+                    <p className="text-sm uppercase tracking-[0.15em] text-slate-400">Live notes & artifacts</p>
+                    <span className="pill-on">Auto-updating</span>
                   </div>
                   {insightsLoading && <p className="text-sm text-slate-400">Loading insights…</p>}
                   {!insightsLoading && insights && (
-                    <div className="flex flex-col gap-3 max-h-72 overflow-y-auto pr-1">
-                      {insights.map((item, idx) => (
-                        <div key={idx} className="rounded-xl border border-white/10 bg-slate-900/70 p-3 flex flex-col gap-2">
-                          <p className="text-xs text-slate-500">
-                            {item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : 'Insight'}
-                          </p>
-                          <ul className="list-disc list-inside text-sm text-slate-200 space-y-1">
-                            {item.notes?.map((n, i) => (
-                              <li key={i}>{n}</li>
-                            ))}
-                            {(!item.notes || item.notes.length === 0) && <li className="text-slate-500">No notes</li>}
-                          </ul>
-                          <div className="flex flex-wrap gap-2">
-                            {item.queries?.map((q, i) => (
-                              <span key={i} className="rounded-full bg-white/10 border border-white/15 px-3 py-1 text-xs text-slate-100">
-                                {q}
-                              </span>
-                            ))}
-                            {(!item.queries || item.queries.length === 0) && <span className="text-xs text-slate-500">No queries</span>}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 max-h-96 overflow-y-auto pr-1">
+                      <div className="flex flex-col gap-2">
+                        {insights.length === 0 ? (
+                          <p className="text-sm text-slate-400">No insights yet.</p>
+                        ) : (
+                          <div className="rounded-xl border border-white/10 bg-slate-900/70 p-3 flex flex-col gap-2">
+                            <p className="text-xs text-slate-500">Notes</p>
+                            {combinedNotes.length > 0 ? (
+                              <div className="flex flex-col gap-1 text-sm text-slate-200">
+                                {combinedNotes.map((note, idx) => (
+                                  <p key={idx}>{note}</p>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-slate-500">No notes yet.</p>
+                            )}
                           </div>
-                          <div className="flex flex-wrap gap-2">
-                            {item.entities?.map((e, i) => (
-                              <span key={i} className="rounded-full bg-blue-500/15 text-blue-100 px-3 py-1 text-xs">
-                                {e}
-                              </span>
-                            ))}
-                            {(!item.entities || item.entities.length === 0) && <span className="text-xs text-slate-500">No entities</span>}
-                          </div>
-                        </div>
-                      ))}
-                      {insights.length === 0 && <p className="text-sm text-slate-400">No insights yet.</p>}
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        {insights
+                          .flatMap((item) => item.artifacts || [])
+                          .map((art, idx) => (
+                            <a
+                              key={idx}
+                              className="rounded-xl border border-white/10 bg-slate-900/70 p-3 flex flex-col gap-1 hover:border-blue-400/40 transition"
+                              href={art.url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <p className="text-sm font-semibold text-slate-100">{art.title}</p>
+                              <p className="text-xs text-slate-500 break-all">{art.url}</p>
+                            </a>
+                          ))}
+                        {insights.flatMap((i) => i.artifacts || []).length === 0 && (
+                          <p className="text-sm text-slate-400">No artifacts yet.</p>
+                        )}
+                      </div>
                     </div>
                   )}
-                </div>
-
-                <div className="rounded-2xl border border-white/5 bg-white/5 p-4 flex flex-col gap-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm uppercase tracking-[0.15em] text-slate-400">Ask Grok</p>
-                    <span className="text-xs text-slate-500">Stubbed</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      className="w-full rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Ask a question about this recording..."
-                    />
-                    <button
-                      className="rounded-xl bg-gradient-to-r from-blue-500 to-cyan-400 px-4 py-2 text-slate-950 font-semibold disabled:opacity-50"
-                      onClick={runSearch}
-                      disabled={searching || !searchQuery.trim()}
-                    >
-                      {searching ? 'Thinking…' : 'Ask'}
-                    </button>
-                  </div>
-                  <div className="min-h-[80px] rounded-xl border border-white/10 bg-slate-900/50 p-3 text-sm text-slate-200">
-                    {searchAnswer ? searchAnswer : 'Responses will appear here.'}
-                  </div>
                 </div>
               </div>
             </div>

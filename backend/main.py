@@ -338,8 +338,7 @@ async def get_session_insights(session_id: str):
         payload = {
             "timestamp": datetime.utcnow().isoformat(),
             "notes": insights.get("notes", []),
-            "queries": insights.get("queries", []),
-            "entities": insights.get("entities", []),
+            "artifacts": insights.get("artifacts", []),
         }
         append_insights(session_id, payload)
         return {"insights": [payload]}
@@ -390,8 +389,7 @@ async def insights_websocket(ws: WebSocket, session_id: str):
             payload = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "notes": insights.get("notes", []),
-                "queries": insights.get("queries", []),
-                "entities": insights.get("entities", []),
+                "artifacts": insights.get("artifacts", []),
             }
             append_insights(session_id, payload)
             await ws.send_text(json.dumps({"type": "insights", "data": payload}))
