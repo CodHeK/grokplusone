@@ -68,6 +68,7 @@ function App() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selectedSession, setSelectedSession] = useState<SessionSummary | null>(null);
+  const [sessionModalOpen, setSessionModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchAnswer, setSearchAnswer] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
@@ -485,7 +486,10 @@ function App() {
                   <button
                     key={session.session_id}
                     className="w-full rounded-xl border border-white/5 bg-white/5 px-3 py-2 text-left hover:border-blue-400/30 transition"
-                    onClick={() => setSelectedSession(session)}
+                    onClick={() => {
+                      setSelectedSession(session);
+                      setSessionModalOpen(true);
+                    }}
                   >
                     <div className="flex items-center justify-between">
                       <span className="font-semibold">
@@ -503,8 +507,8 @@ function App() {
           </div>
         </div>
 
-        {selectedSession && (
-          <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 px-4" onClick={() => setSelectedSession(null)}>
+        {sessionModalOpen && selectedSession && (
+          <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 px-4" onClick={() => setSessionModalOpen(false)}>
             <div
               className="w-full max-w-5xl max-h-[120vh] overflow-y-auto rounded-3xl bg-slate-900 border border-white/10 p-6 shadow-2xl shadow-blue-500/10"
               onClick={(e) => e.stopPropagation()}
@@ -521,7 +525,7 @@ function App() {
                 </div>
                 <button
                   className="rounded-full bg-red-500/90 px-4 py-2 text-sm font-semibold text-white"
-                  onClick={() => setSelectedSession(null)}
+                  onClick={() => setSessionModalOpen(false)}
                 >
                   Close
                 </button>
