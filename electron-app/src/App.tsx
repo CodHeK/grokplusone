@@ -18,6 +18,7 @@ type InsightPayload = {
   timestamp?: string;
   notes: string[];
   artifacts?: { title: string; url: string }[];
+  artifact_query?: string;
 };
 
 type ArtifactItem = {
@@ -272,14 +273,12 @@ function App() {
               const payload = JSON.parse(event.data);
               if (payload.type === 'insights_init' && payload.insights) {
                 setInsights(payload.insights);
+                setArtifacts(payload.insights.flatMap((entry: InsightPayload) => entry.artifacts || []));
               } else if (payload.type === 'insights' && payload.data) {
                 setInsights((prev) => {
                   const next = prev ? [...prev, payload.data] : [payload.data];
                   return next;
                 });
-              } else if (payload.type === 'artifacts_init') {
-                setArtifacts(payload.artifacts || []);
-              } else if (payload.type === 'artifacts' && payload.data) {
                 setArtifacts(payload.data.artifacts || []);
               }
             } catch (e) {

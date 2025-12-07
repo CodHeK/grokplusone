@@ -222,6 +222,9 @@ def load_insights(session_id: str) -> list:
     return items
 
 
+
+
+
 def session_meta_path(session_id: str) -> Path:
     return STORAGE_ROOT / session_id / "session.json"
 
@@ -440,32 +443,65 @@ async def get_session_insights(session_id: str):
 
     try:
         insights = await generate_insights_from_transcript(transcript, user_interests=user_interests_text)
-        payload = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "notes": insights.get("notes", [])
-        }
-        append_insights(session_id, payload)
-        return {"insights": [payload]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Insights generation failed: {e}")
 
+    try:
+        artifacts_payload = await build_session_artifacts_response(
+            session_id,
+            transcript=transcript,
+            user_interests_text=user_interests_text,
+            force_generate=True,
+            store_result=False,
+        )
+    except Exception:
+        artifacts_payload = {"artifacts": [], "query": None}
 
-async def build_session_artifacts_response(session_id: str) -> Dict[str, Any]:
+    payload = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "notes": insights.get("notes", []),
+        "artifacts": artifacts_payload.get("artifacts", []),
+        "artifact_query": artifacts_payload.get("query"),
+    }
+    append_insights(session_id, payload)
+    return {"insights": [payload]}
+
+
+async def build_session_artifacts_response(
+    session_id: str,
+    *,
+    transcript: Optional[str] = None,
+    user_interests_text: Optional[str] = None,
+    force_generate: bool = False,
+    store_result: bool = False,
+) -> Dict[str, Any]:
     meta_file = session_meta_path(session_id)
     if not meta_file.exists():
         raise HTTPException(status_code=404, detail="Session not found")
+
+    cached_entries = load_insights(session_id)
+    if cached_entries and not force_generate:
+        for entry in reversed(cached_entries):
+            artifacts = entry.get("artifacts") or []
+            if artifacts:
+                return {
+                    "timestamp": entry.get("timestamp"),
+                    "query": entry.get("artifact_query"),
+                    "artifacts": artifacts,
+                }
 
     try:
         meta = json.loads(meta_file.read_text())
     except Exception:
         meta = {}
 
-    transcript = read_session_text(session_id, max_chars=4000)
+    if transcript is None:
+        transcript = read_session_text(session_id, max_chars=4000)
     if not transcript:
         raise HTTPException(status_code=400, detail="No transcript found for this session")
 
     excerpt = transcript[-1000:] if len(transcript) > 1000 else transcript
-    user_interests_text = get_user_interests_text()
+    user_interests_text = user_interests_text if user_interests_text is not None else get_user_interests_text()
 
     try:
         query = await generate_artifact_search_query(excerpt, user_interests=user_interests_text)
@@ -494,12 +530,27 @@ async def build_session_artifacts_response(session_id: str) -> Dict[str, Any]:
             }
         )
 
-    return {"query": query, "artifacts": artifacts}
+    payload = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "query": query,
+        "artifacts": artifacts,
+    }
+
+    if store_result:
+        entry = {
+            "timestamp": payload["timestamp"],
+            "notes": [],
+            "artifacts": artifacts,
+            "artifact_query": query,
+        }
+        append_insights(session_id, entry)
+
+    return payload
 
 
 @app.get("/sessions/{session_id}/artifacts")
 async def get_session_artifacts(session_id: str):
-    return await build_session_artifacts_response(session_id)
+    return await build_session_artifacts_response(session_id, force_generate=False, store_result=True)
 
 
 @app.websocket("/ws/insights/{session_id}")
@@ -516,14 +567,6 @@ async def insights_websocket(ws: WebSocket, session_id: str):
     # Send cached insights immediately
     cached = load_insights(session_id)
     await ws.send_text(json.dumps({"type": "insights_init", "insights": cached}))
-
-    try:
-        artifacts_payload = await build_session_artifacts_response(session_id)
-        await ws.send_text(json.dumps({"type": "artifacts_init", **artifacts_payload}))
-    except HTTPException as e:
-        await ws.send_text(json.dumps({"type": "artifacts_error", "message": e.detail}))
-    except Exception as e:
-        await ws.send_text(json.dumps({"type": "artifacts_error", "message": str(e)}))
 
     last_len = 0
     try:
@@ -544,21 +587,25 @@ async def insights_websocket(ws: WebSocket, session_id: str):
                 await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
                 continue
 
-            payload = {
+            try:
+                artifacts_payload = await build_session_artifacts_response(
+                    session_id,
+                    transcript=transcript,
+                    user_interests_text=user_interests_text,
+                    force_generate=True,
+                    store_result=False,
+                )
+            except Exception:
+                artifacts_payload = {"query": None, "artifacts": [], "timestamp": datetime.utcnow().isoformat()}
+
+            combined_payload = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "notes": insights.get("notes", []),
-                "artifacts": insights.get("artifacts", []),
+                "artifacts": artifacts_payload.get("artifacts", []),
+                "artifact_query": artifacts_payload.get("query"),
             }
-            append_insights(session_id, payload)
-            await ws.send_text(json.dumps({"type": "insights", "data": payload}))
-
-            try:
-                artifacts_payload = await build_session_artifacts_response(session_id)
-                await ws.send_text(json.dumps({"type": "artifacts", "data": artifacts_payload}))
-            except HTTPException as e:
-                await ws.send_text(json.dumps({"type": "artifacts_error", "message": e.detail}))
-            except Exception as e:
-                await ws.send_text(json.dumps({"type": "artifacts_error", "message": str(e)}))
+            append_insights(session_id, combined_payload)
+            await ws.send_text(json.dumps({"type": "insights", "data": combined_payload}))
     except WebSocketDisconnect:
         print(f"Insights subscriber disconnected for session {session_id}")
     except Exception as e:
